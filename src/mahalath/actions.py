@@ -51,6 +51,10 @@ from mahalath.db.repositories import (
 
 DESTRUCTIVE_TYPES = frozenset({"propose_merge", "propose_split"})
 DEFAULT_AUTO_APPLY_THRESHOLD = 8.0
+# Re-parenting (changing a child's existing parent to a different one) is
+# potentially more disruptive than initial parent assignment, so it requires
+# higher confidence to auto-apply. Operator can lower at dispatch time.
+DEFAULT_REPARENT_THRESHOLD = 8.5
 
 
 def _utcnow() -> datetime:
@@ -274,11 +278,12 @@ def _validate_parent(action: ProposeParent, db: Database) -> ValidationResult:
             False, f"parent label {action.parent_label!r} does not exist"
         )
 
-    if child.parent_label is not None:
+    # Re-parenting is allowed (S2.4); only reject a no-op (same parent).
+    if child.parent_label == action.parent_label:
         return ValidationResult(
             False,
             f"child {action.child_label!r} already has parent "
-            f"{child.parent_label!r}; re-parenting not supported yet",
+            f"{action.parent_label!r}; no change needed",
         )
 
     try:
@@ -292,6 +297,17 @@ def _validate_parent(action: ProposeParent, db: Database) -> ValidationResult:
         return ValidationResult(False, "edge would introduce a cycle")
 
     return ValidationResult(True, None)
+
+
+def is_reparenting(action: ProposeParent, db: Database) -> bool:
+    """Return True if applying `action` would change a child's existing parent."""
+    entries = OntologyEntryRepository(db)
+    child = entries.get(action.child_label)
+    return (
+        child is not None
+        and child.parent_label is not None
+        and child.parent_label != action.parent_label
+    )
 
 
 def _has_cycle(db: Database, *, new_parent: str, new_child: str) -> bool:
@@ -386,6 +402,25 @@ def apply(action: Action, db: Database) -> dict[str, Any]:
 
 
 def _apply_parent(action: ProposeParent, db: Database) -> dict[str, Any]:
+    entries = OntologyEntryRepository(db)
+    child = entries.get(action.child_label)
+    previous_parent_label = child.parent_label if child else None
+    reparenting = (
+        previous_parent_label is not None
+        and previous_parent_label != action.parent_label
+    )
+
+    # Re-parenting: drop the old tree edge before inserting the new one,
+    # otherwise the unique (parent_label, child_label) index is fine but
+    # the OLD edge would dangle.
+    if reparenting:
+        db.ontology_tree.delete_one(
+            {
+                "parent_label": previous_parent_label,
+                "child_label": action.child_label,
+            }
+        )
+
     OntologyTreeRepository(db).add_edge(
         OntologyTreeEdge(
             parent_label=action.parent_label,
@@ -407,6 +442,8 @@ def _apply_parent(action: ProposeParent, db: Database) -> dict[str, Any]:
         "parent_label_updated": True,
         "child_label": action.child_label,
         "parent_label": action.parent_label,
+        "previous_parent_label": previous_parent_label,
+        "reparenting": reparenting,
     }
 
 
@@ -430,11 +467,19 @@ def dispatch(
     db: Database,
     *,
     auto_apply_threshold: float = DEFAULT_AUTO_APPLY_THRESHOLD,
+    reparent_threshold: float = DEFAULT_REPARENT_THRESHOLD,
 ) -> DispatchResult:
     """Validate, persist, and (where allowed) apply a proposed action.
 
     Always writes an ActionProposal regardless of outcome so the audit
     trail captures invalid / pending / applied cases uniformly.
+
+    Threshold selection:
+      - destructive actions (merge, split): always pending_review
+      - re-parenting (propose_parent where child already has a different
+        parent): requires confidence >= reparent_threshold (8.5 default)
+      - everything else: requires confidence >= auto_apply_threshold
+        (8.0 default)
     """
     proposal = ActionProposal(
         action_type=action.action_type,
@@ -474,11 +519,17 @@ def dispatch(
             payload=action.payload(),
         )
 
-    if action.confidence < auto_apply_threshold:
+    effective_threshold = auto_apply_threshold
+    threshold_label = "auto-apply"
+    if isinstance(action, ProposeParent) and is_reparenting(action, db):
+        effective_threshold = reparent_threshold
+        threshold_label = "re-parenting"
+
+    if action.confidence < effective_threshold:
         proposal.status = "pending_review"
         proposal.rejection_reason = (
-            f"confidence {action.confidence} below auto-apply threshold "
-            f"{auto_apply_threshold}"
+            f"confidence {action.confidence} below {threshold_label} "
+            f"threshold {effective_threshold}"
         )
         repo.insert(proposal)
         return DispatchResult(
@@ -486,8 +537,8 @@ def dispatch(
             action_type=action.action_type,
             status="pending_review",
             detail=(
-                f"confidence {action.confidence} below threshold "
-                f"{auto_apply_threshold}"
+                f"confidence {action.confidence} below {threshold_label} "
+                f"threshold {effective_threshold}"
             ),
             payload=action.payload(),
         )

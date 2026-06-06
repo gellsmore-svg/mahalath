@@ -162,11 +162,24 @@ def test_validate_parent_rejects_missing_label(mongo_db) -> None:
     assert "does not exist" in result.reason
 
 
-def test_validate_parent_rejects_already_parented(mongo_db) -> None:
+def test_validate_parent_allows_reparenting(mongo_db) -> None:
     _seed(mongo_db)
-    # Manually set MPL-002 as already having a parent.
+    # MPL-002 already has a parent; re-parenting is allowed.
     mongo_db.ontology_entries.update_one(
         {"_id": "MPL-002"}, {"$set": {"parent_label": "MPL-003"}}
+    )
+    action = ProposeParent(
+        child_label="MPL-002", parent_label="MPL-001",
+        reason="better parent", confidence=8.6,
+    )
+    result = validate(action, mongo_db)
+    assert result.valid
+
+
+def test_validate_parent_rejects_same_parent_noop(mongo_db) -> None:
+    _seed(mongo_db)
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-002"}, {"$set": {"parent_label": "MPL-001"}}
     )
     action = ProposeParent(
         child_label="MPL-002", parent_label="MPL-001",
@@ -174,7 +187,7 @@ def test_validate_parent_rejects_already_parented(mongo_db) -> None:
     )
     result = validate(action, mongo_db)
     assert not result.valid
-    assert "already has parent" in result.reason
+    assert "no change needed" in result.reason
 
 
 def test_validate_parent_detects_cycle(mongo_db) -> None:
@@ -297,6 +310,69 @@ def test_dispatch_invalid_action_records_proposal_as_invalid(mongo_db) -> None:
     assert "does not exist" in result.detail
     [proposal] = ActionProposalRepository(mongo_db).by_status("invalid")
     assert proposal.rejection_reason is not None
+
+
+def test_dispatch_reparent_above_reparent_threshold_applies(mongo_db) -> None:
+    _seed(mongo_db)
+    # Initial parent: MPL-002 -> MPL-003.
+    OntologyTreeRepository(mongo_db).add_edge(OntologyTreeEdge(
+        parent_label="MPL-003", child_label="MPL-002",
+    ))
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-002"}, {"$set": {"parent_label": "MPL-003"}}
+    )
+    # Re-parent to MPL-001 at conf 8.7 (>= 8.5 reparent threshold).
+    action = ProposeParent(
+        child_label="MPL-002", parent_label="MPL-001",
+        reason="better parent identified", confidence=8.7,
+    )
+    result = dispatch(action, mongo_db)
+    assert result.status == "applied"
+
+    entry = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert entry.parent_label == "MPL-001"
+    # Old tree edge gone, new tree edge present.
+    assert OntologyTreeRepository(mongo_db).children_of("MPL-003") == []
+    assert OntologyTreeRepository(mongo_db).children_of("MPL-001") == ["MPL-002"]
+    # Audit row carries the previous parent for rollback.
+    [proposal] = ActionProposalRepository(mongo_db).by_status("applied")
+    assert proposal.application_result["previous_parent_label"] == "MPL-003"
+    assert proposal.application_result["reparenting"] is True
+
+
+def test_dispatch_reparent_below_reparent_threshold_routes_to_review(mongo_db) -> None:
+    _seed(mongo_db)
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-002"}, {"$set": {"parent_label": "MPL-003"}}
+    )
+    OntologyTreeRepository(mongo_db).add_edge(OntologyTreeEdge(
+        parent_label="MPL-003", child_label="MPL-002",
+    ))
+    # 8.2 is above auto_apply_threshold (8.0) but below reparent_threshold (8.5).
+    action = ProposeParent(
+        child_label="MPL-002", parent_label="MPL-001",
+        reason="maybe", confidence=8.2,
+    )
+    result = dispatch(action, mongo_db)
+    assert result.status == "pending_review"
+    assert "re-parenting" in result.detail
+    # Existing tree state preserved.
+    entry = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert entry.parent_label == "MPL-003"
+
+
+def test_dispatch_initial_parent_above_auto_apply_but_below_reparent_still_applies(mongo_db) -> None:
+    """Initial parent assignment uses the lower auto_apply_threshold."""
+    _seed(mongo_db)
+    # MPL-002 is top-level (no parent). Confidence 8.1.
+    action = ProposeParent(
+        child_label="MPL-002", parent_label="MPL-001",
+        reason="x", confidence=8.1,
+    )
+    result = dispatch(action, mongo_db)
+    assert result.status == "applied"
+    entry = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert entry.parent_label == "MPL-001"
 
 
 def test_dispatch_merge_routes_to_review_even_at_high_confidence(mongo_db) -> None:

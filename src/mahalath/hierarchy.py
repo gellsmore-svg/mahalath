@@ -201,7 +201,7 @@ You are an ontology curator. Look at the existing entries above and the NEW entr
 CRITICAL: every label field in your actions MUST be the MPL identifier string from the entries above (e.g. "MPL-001", "MPL-002.003a"). NEVER use the canonical term or any other identifier — only the exact MPL-NNN string. If you cannot find the exact MPL string in the entries above, do not propose that action.
 
 Available action types:
-  - propose_parent: an existing top-level label should become a child of another existing top-level label. Required fields: child_label, parent_label (both MPL identifiers).
+  - propose_parent: an existing label should become a child of another existing label. Required fields: child_label, parent_label (both MPL identifiers). This applies BOTH to initial parent assignment (the child is currently top-level) AND to re-parenting (the child already has a parent but the proposed parent better captures the relationship). Re-parenting requires confidence >= 8.5 to auto-apply.
   - propose_alias: add a synonym to an existing label. Required fields: label (MPL identifier), alias (free-form term string).
   - propose_merge: two labels refer to the same concept; one should be marked superseded by the other. Required fields: keep_label, drop_label (both MPL identifiers).
   - propose_split: a label needs to be split into contradistinct variants. Required fields: label (MPL identifier), into (list of new term strings).
