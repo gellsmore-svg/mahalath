@@ -47,7 +47,7 @@ class AgentRolesConfig(BaseModel):
 
 class RuntimeConfig(BaseModel):
     model_adapter: str = "ollama_cli"
-    model: str = "gemma3:1b"
+    model: str = "gemma4:e2b"
     agents: AgentRolesConfig = Field(default_factory=AgentRolesConfig)
     max_iterations_per_term: int = 50
     confidence_threshold: float = 8.0

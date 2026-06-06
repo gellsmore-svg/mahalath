@@ -47,7 +47,7 @@ class OllamaCliAdapter:
         self,
         executable: Path,
         *,
-        default_model: str = "gemma3:1b",
+        default_model: str = "gemma4:e2b",
         default_timeout_seconds: int = 180,
     ) -> None:
         if not Path(executable).exists():
