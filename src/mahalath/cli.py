@@ -128,6 +128,19 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
+    export_glossary_parser = subcommands.add_parser(
+        "export-glossary",
+        help="Export the ontology as a Markdown or JSON glossary.",
+    )
+    export_glossary_parser.add_argument(
+        "--format", choices=["md", "json"], default="md",
+        help="Output format (default: md).",
+    )
+    export_glossary_parser.add_argument(
+        "--out", default=None,
+        help="Output file path. Defaults to stdout.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -177,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rollback-proposal":
         return _operator_decision(
             config, args.proposal_id, kind="rollback", note=args.note
+        )
+
+    if args.command == "export-glossary":
+        return _export_glossary(
+            config, fmt=args.format,
+            out_path=Path(args.out) if args.out else None,
         )
 
     if args.command in {"debate-one", "process-input"}:
@@ -606,6 +625,42 @@ def _proposal_summary(p) -> dict[str, Any]:
         "operator_note": p.operator_note,
         "created_at": p.created_at,
     }
+
+
+def _export_glossary(
+    config: AppConfig, *, fmt: str, out_path: Path | None
+) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.glossary import export_json, export_markdown
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        if fmt == "md":
+            result = export_markdown(
+                db, out_path=out_path, database_name=config.mongo.database
+            )
+        else:
+            result = export_json(
+                db, out_path=out_path, database_name=config.mongo.database
+            )
+
+        if out_path is None:
+            print(result.output)
+        else:
+            print(json.dumps({
+                "ok": True,
+                "format": result.format,
+                "entry_count": result.entry_count,
+                "written_to": str(result.written_to),
+            }, indent=2))
+        return 0
+    finally:
+        close_all()
 
 
 def _list_ontology(config: AppConfig) -> int:

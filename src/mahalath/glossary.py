@@ -1,0 +1,232 @@
+"""Glossary export: turn the ontology into consumable Markdown / JSON.
+
+Stage 1 produces ontology_entries records; Stage 2 hierarchy review
+attaches them in a tree; the rest of the world wants to read the
+result. This module flattens the live `mahalath_*` database into two
+shareable formats:
+
+  Markdown: human-facing, ordered by MPL label, one section per entry,
+            children listed under each parent, aliases enumerated.
+            Suitable for committing to a docs site or sharing with a
+            reader.
+
+  JSON:     machine-facing, full schema fidelity (definitions with
+            model + timestamp, source_document_ids, decision_log_id,
+            children, aliases). Suitable for downstream tooling.
+
+No agent calls are made; this is a pure read + render of the current
+database state. Re-run after every process-document if you want a
+fresh artifact.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from pymongo.database import Database
+
+from mahalath.db.models import OntologyEntry
+from mahalath.db.repositories import (
+    OntologyEntryRepository,
+    OntologyTreeRepository,
+)
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    format: str          # "md" or "json"
+    entry_count: int
+    output: str
+    written_to: Path | None = None
+
+
+@dataclass
+class _EntryWithChildren:
+    entry: OntologyEntry
+    children: list[str]
+
+
+def export_markdown(
+    db: Database,
+    *,
+    out_path: Path | None = None,
+    database_name: str = "mahalath",
+) -> ExportResult:
+    entries = _gather_entries(db)
+    body = _render_markdown(entries, database_name)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+    return ExportResult(
+        format="md",
+        entry_count=len(entries),
+        output=body,
+        written_to=out_path,
+    )
+
+
+def export_json(
+    db: Database,
+    *,
+    out_path: Path | None = None,
+    database_name: str = "mahalath",
+) -> ExportResult:
+    entries = _gather_entries(db)
+    payload = _build_json_payload(entries, database_name)
+    body = json.dumps(payload, indent=2, default=_json_default)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8")
+    return ExportResult(
+        format="json",
+        entry_count=len(entries),
+        output=body,
+        written_to=out_path,
+    )
+
+
+# --- Gathering -------------------------------------------------------------
+
+
+def _gather_entries(db: Database) -> list[_EntryWithChildren]:
+    entry_repo = OntologyEntryRepository(db)
+    tree_repo = OntologyTreeRepository(db)
+    result: list[_EntryWithChildren] = []
+    for label in sorted(entry_repo.all_labels()):
+        entry = entry_repo.get(label)
+        if entry is None:
+            continue
+        children = sorted(tree_repo.children_of(label))
+        result.append(_EntryWithChildren(entry=entry, children=children))
+    return result
+
+
+# --- Markdown --------------------------------------------------------------
+
+
+def _render_markdown(
+    entries: list[_EntryWithChildren], database_name: str
+) -> str:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    n = len(entries)
+    n_roots = sum(1 for ec in entries if ec.entry.parent_label is None)
+    n_derived = n - n_roots
+
+    lines = [
+        "# Mahalath Ontology Glossary",
+        "",
+        f"Generated {generated_at} from `{database_name}`.",
+        "",
+        f"**{n}** entries · **{n_roots}** top-level · "
+        f"**{n_derived}** with parent",
+        "",
+        "---",
+        "",
+    ]
+
+    if not entries:
+        lines.append("_(ontology is empty)_")
+        lines.append("")
+        return "\n".join(lines)
+
+    for ec in entries:
+        e = ec.entry
+        parent_display = (
+            f"`{e.parent_label}`" if e.parent_label else "_top-level_"
+        )
+        lines.append(f"## {e.mpl_label} — {e.canonical_term}")
+        lines.append("")
+        lines.append(
+            f"**Confidence:** {e.confidence:.1f} · "
+            f"**Status:** {e.status} · "
+            f"**Parent:** {parent_display}"
+        )
+        lines.append("")
+
+        if e.definitions:
+            for definition in e.definitions:
+                lines.append(f"> {definition.text}")
+                attribution_parts = []
+                if definition.model_used:
+                    attribution_parts.append(f"from `{definition.model_used}`")
+                if definition.created_at:
+                    attribution_parts.append(
+                        _iso(definition.created_at)
+                    )
+                if attribution_parts:
+                    lines.append("")
+                    lines.append(f"_— {', '.join(attribution_parts)}_")
+                lines.append("")
+
+        if e.aliases:
+            lines.append(
+                "**Aliases:** " + ", ".join(f"_{a}_" for a in e.aliases)
+            )
+            lines.append("")
+
+        if ec.children:
+            lines.append("**Children:**")
+            for child in ec.children:
+                lines.append(f"- `{child}`")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# --- JSON ------------------------------------------------------------------
+
+
+def _build_json_payload(
+    entries: list[_EntryWithChildren], database_name: str
+) -> dict[str, Any]:
+    return {
+        "schema": "mahalath.glossary.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "database": database_name,
+        "count": len(entries),
+        "entries": [
+            {
+                "mpl_label": ec.entry.mpl_label,
+                "canonical_term": ec.entry.canonical_term,
+                "aliases": list(ec.entry.aliases),
+                "parent_label": ec.entry.parent_label,
+                "children": list(ec.children),
+                "confidence": ec.entry.confidence,
+                "status": ec.entry.status,
+                "definitions": [
+                    {
+                        "text": d.text,
+                        "language": d.language,
+                        "model_used": d.model_used,
+                        "decision_log_id": d.decision_log_id,
+                        "created_at": d.created_at,
+                    }
+                    for d in ec.entry.definitions
+                ],
+                "source_document_ids": list(ec.entry.source_document_ids),
+                "decision_log_id": ec.entry.decision_log_id,
+                "created_at": ec.entry.created_at,
+                "updated_at": ec.entry.updated_at,
+            }
+            for ec in entries
+        ],
+    }
+
+
+def _json_default(obj: Any) -> Any:
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return str(obj)
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
