@@ -33,6 +33,7 @@ Exit codes (in addition to the conventional 0=success):
     6  document_id not found in DB (process-document)
     7  archived source file missing on disk (process-document)
     9  proposal-workflow error (proposal not found, wrong status, etc.)
+    10 input directory missing (process-input)
 """
 
 from __future__ import annotations
@@ -91,9 +92,27 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    subcommands.add_parser(
+    process_input_parser = subcommands.add_parser(
         "process-input",
-        help="(Stage 1) Process anything in the watched input/ folder.",
+        help="Ingest every Markdown file in input/ and run the pipeline "
+        "on any document that has not yet been processed.",
+    )
+    process_input_parser.add_argument(
+        "--max-terms",
+        type=int,
+        default=1,
+        help="Max terms to debate per document (default: 1).",
+    )
+    process_input_parser.add_argument(
+        "--no-hierarchy-review",
+        action="store_true",
+        help="Skip the post-accept hierarchy-review pass.",
+    )
+    process_input_parser.add_argument(
+        "--consensus-passes",
+        type=int,
+        default=None,
+        help="Override hierarchy_consensus_passes for this run.",
     )
     subcommands.add_parser(
         "list-ontology", help="List ontology entries."
@@ -198,9 +217,17 @@ def main(argv: list[str] | None = None) -> int:
             out_path=Path(args.out) if args.out else None,
         )
 
-    if args.command in {"debate-one", "process-input"}:
+    if args.command == "process-input":
+        return _process_input(
+            config,
+            max_terms_per_doc=args.max_terms,
+            skip_hierarchy_review=args.no_hierarchy_review,
+            consensus_passes_override=args.consensus_passes,
+        )
+
+    if args.command == "debate-one":
         print(
-            f"mahalath: command {args.command!r} is not yet implemented.",
+            "mahalath: command 'debate-one' is not yet implemented.",
             file=sys.stderr,
         )
         return 2
@@ -253,19 +280,9 @@ def _process_document(
     skip_hierarchy_review: bool = False,
     consensus_passes_override: int | None = None,
 ) -> int:
-    from mahalath.actions import dispatch
     from mahalath.adapters import make_adapter
-    from mahalath.adapters.base import AdapterError
-    from mahalath.chunking import extract_candidates_chunked
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.db.repositories import DocumentRepository
-    from mahalath.debate import DebateError, run_debate
-    from mahalath.extraction import ExtractionError
-    from mahalath.hierarchy import (
-        HierarchyReviewError,
-        run_hierarchy_review_consensus,
-    )
-    from mahalath.ontology import persist_debate_result
     from mahalath.style import load_style_overlay
 
     try:
@@ -276,97 +293,250 @@ def _process_document(
         return 4
 
     try:
-        doc_repo = DocumentRepository(db)
-        document = doc_repo.find_by_document_id(document_id)
+        document = DocumentRepository(db).find_by_document_id(document_id)
         if document is None:
             print(f"mahalath: document not found: {document_id}", file=sys.stderr)
             return 6
 
-        archive_path = Path(document.archive_path)
-        if not archive_path.is_absolute():
-            archive_path = Path.cwd() / archive_path
-        if not archive_path.exists():
-            print(f"mahalath: archived source missing: {archive_path}", file=sys.stderr)
-            return 7
-        text = archive_path.read_text(encoding="utf-8", errors="replace")
+        adapter = make_adapter(config.runtime.model_adapter, config)
+        style_overlay = load_style_overlay(config)
+
+        result = _run_pipeline_on_document(
+            document, db, adapter, config,
+            max_terms=max_terms,
+            skip_hierarchy_review=skip_hierarchy_review,
+            consensus_passes_override=consensus_passes_override,
+            style_overlay=style_overlay,
+        )
+
+        if not result.get("ok"):
+            print(f"mahalath: {result.get('error')}", file=sys.stderr)
+            error_text = result.get("error", "")
+            if "archived source missing" in error_text:
+                return 7
+            if "extraction failed" in error_text:
+                return 8
+            return 9
+
+        print(json.dumps(result, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _process_input(
+    config: AppConfig,
+    *,
+    max_terms_per_doc: int,
+    skip_hierarchy_review: bool = False,
+    consensus_passes_override: int | None = None,
+) -> int:
+    from mahalath.adapters import make_adapter
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.ingestion import IngestionError, ingest_one
+    from mahalath.style import load_style_overlay
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        input_dir = Path(config.paths.input)
+        if not input_dir.is_absolute():
+            input_dir = Path.cwd() / input_dir
+        if not input_dir.exists():
+            print(
+                f"mahalath: input directory missing: {input_dir}",
+                file=sys.stderr,
+            )
+            return 10
+
+        files = sorted(input_dir.glob("*.md"))
+        if not files:
+            print(json.dumps({
+                "ok": True,
+                "input_directory": str(input_dir),
+                "files_scanned": 0,
+                "results": [],
+            }, indent=2))
+            return 0
 
         adapter = make_adapter(config.runtime.model_adapter, config)
         style_overlay = load_style_overlay(config)
 
-        try:
-            candidates = extract_candidates_chunked(
-                text, adapter, style_overlay=style_overlay
-            )
-        except ExtractionError as exc:
-            print(f"mahalath: extraction failed: {exc}", file=sys.stderr)
-            return 8
-
-        debated: list[dict[str, Any]] = []
-        for candidate in candidates[:max_terms]:
+        results: list[dict[str, Any]] = []
+        for file_path in files:
+            entry: dict[str, Any] = {"file": str(file_path)}
             try:
-                debate_result = run_debate(
-                    term=candidate.term,
-                    context=candidate.context,
-                    source_document_id=document_id,
-                    adapter=adapter,
-                    runtime=config.runtime,
-                    style_overlay=style_overlay,
-                )
-            except (DebateError, AdapterError) as exc:
-                debated.append({
-                    "term": candidate.term,
-                    "outcome": "error",
-                    "error": str(exc),
-                })
+                ingestion = ingest_one(file_path, config, db)
+            except IngestionError as exc:
+                entry["ok"] = False
+                entry["error"] = f"ingestion failed: {exc}"
+                results.append(entry)
                 continue
 
-            persist_result = persist_debate_result(debate_result, db, config.runtime)
-            term_record = {
-                "term": candidate.term,
-                "outcome": debate_result.outcome,
-                "final_confidence": debate_result.final_confidence,
-                "final_definition": debate_result.final_definition,
-                "iterations_used": debate_result.iterations_used,
-                "mpl_label": persist_result.mpl_label,
-                "decision_log_id": debate_result.decision_log_id,
-            }
+            entry["document_id"] = ingestion.document.document_id
+            entry["duplicate"] = ingestion.duplicate
+            entry["title"] = ingestion.document.title
 
-            if (
-                not skip_hierarchy_review
-                and persist_result.outcome == "accepted"
-                and persist_result.mpl_label is not None
-            ):
-                term_record["hierarchy_review"] = _run_and_dispatch_review(
-                    db, adapter, config, persist_result.mpl_label,
-                    source_decision_log_id=debate_result.decision_log_id,
-                    dispatch_fn=dispatch,
-                    review_fn=run_hierarchy_review_consensus,
-                    review_exc=HierarchyReviewError,
-                    consensus_passes_override=consensus_passes_override,
-                    style_overlay=style_overlay,
-                )
+            # Skip pipeline work if this document has already been processed
+            # (idempotent re-runs on a watched folder are the headline use).
+            if ingestion.document.processed_at is not None:
+                entry["ok"] = True
+                entry["skipped"] = "already processed"
+                results.append(entry)
+                continue
 
-            debated.append(term_record)
+            pipeline_result = _run_pipeline_on_document(
+                ingestion.document, db, adapter, config,
+                max_terms=max_terms_per_doc,
+                skip_hierarchy_review=skip_hierarchy_review,
+                consensus_passes_override=consensus_passes_override,
+                style_overlay=style_overlay,
+            )
+            # Avoid double-keying document_id / title.
+            for k, v in pipeline_result.items():
+                if k not in entry:
+                    entry[k] = v
+            results.append(entry)
 
-        doc_repo.mark_processed(document_id)
-
-        log_path = _write_process_log(
-            config, document_id, document.title, candidates, debated
+        successes = sum(
+            1 for r in results
+            if r.get("ok", False) and "skipped" not in r
         )
-
+        skipped = sum(1 for r in results if r.get("skipped"))
+        failed = sum(1 for r in results if not r.get("ok", True))
         payload = {
             "ok": True,
-            "document_id": document_id,
-            "title": document.title,
-            "candidates_extracted": len(candidates),
-            "debated": debated,
-            "remaining_candidates": [c.term for c in candidates[max_terms:]],
-            "activity_log_path": str(log_path),
+            "input_directory": str(input_dir),
+            "files_scanned": len(files),
+            "processed": successes,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
         }
         print(json.dumps(payload, indent=2))
         return 0
     finally:
         close_all()
+
+
+def _run_pipeline_on_document(
+    document,
+    db,
+    adapter,
+    config: AppConfig,
+    *,
+    max_terms: int,
+    skip_hierarchy_review: bool,
+    consensus_passes_override: int | None,
+    style_overlay: str | None,
+) -> dict[str, Any]:
+    """Run extract → debate → persist → hierarchy review on one document.
+
+    Returns a result dict in the same shape as `_process_document`'s
+    JSON payload. The `ok: False` branch carries an `error` string and
+    the caller maps it to the appropriate exit code (archive missing,
+    extraction failure, etc.).
+    """
+    from mahalath.actions import dispatch
+    from mahalath.adapters.base import AdapterError
+    from mahalath.chunking import extract_candidates_chunked
+    from mahalath.db.repositories import DocumentRepository
+    from mahalath.debate import DebateError, run_debate
+    from mahalath.extraction import ExtractionError
+    from mahalath.hierarchy import (
+        HierarchyReviewError,
+        run_hierarchy_review_consensus,
+    )
+    from mahalath.ontology import persist_debate_result
+
+    archive_path = Path(document.archive_path)
+    if not archive_path.is_absolute():
+        archive_path = Path.cwd() / archive_path
+    if not archive_path.exists():
+        return {
+            "ok": False,
+            "error": f"archived source missing: {archive_path}",
+            "document_id": document.document_id,
+        }
+    text = archive_path.read_text(encoding="utf-8", errors="replace")
+
+    try:
+        candidates = extract_candidates_chunked(
+            text, adapter, style_overlay=style_overlay
+        )
+    except ExtractionError as exc:
+        return {
+            "ok": False,
+            "error": f"extraction failed: {exc}",
+            "document_id": document.document_id,
+        }
+
+    debated: list[dict[str, Any]] = []
+    for candidate in candidates[:max_terms]:
+        try:
+            debate_result = run_debate(
+                term=candidate.term,
+                context=candidate.context,
+                source_document_id=document.document_id,
+                adapter=adapter,
+                runtime=config.runtime,
+                style_overlay=style_overlay,
+            )
+        except (DebateError, AdapterError) as exc:
+            debated.append({
+                "term": candidate.term,
+                "outcome": "error",
+                "error": str(exc),
+            })
+            continue
+
+        persist_result = persist_debate_result(
+            debate_result, db, config.runtime
+        )
+        term_record: dict[str, Any] = {
+            "term": candidate.term,
+            "outcome": debate_result.outcome,
+            "final_confidence": debate_result.final_confidence,
+            "final_definition": debate_result.final_definition,
+            "iterations_used": debate_result.iterations_used,
+            "mpl_label": persist_result.mpl_label,
+            "decision_log_id": debate_result.decision_log_id,
+        }
+        if (
+            not skip_hierarchy_review
+            and persist_result.outcome == "accepted"
+            and persist_result.mpl_label is not None
+        ):
+            term_record["hierarchy_review"] = _run_and_dispatch_review(
+                db, adapter, config, persist_result.mpl_label,
+                source_decision_log_id=debate_result.decision_log_id,
+                dispatch_fn=dispatch,
+                review_fn=run_hierarchy_review_consensus,
+                review_exc=HierarchyReviewError,
+                consensus_passes_override=consensus_passes_override,
+                style_overlay=style_overlay,
+            )
+        debated.append(term_record)
+
+    DocumentRepository(db).mark_processed(document.document_id)
+    log_path = _write_process_log(
+        config, document.document_id, document.title, candidates, debated
+    )
+
+    return {
+        "ok": True,
+        "document_id": document.document_id,
+        "title": document.title,
+        "candidates_extracted": len(candidates),
+        "debated": debated,
+        "remaining_candidates": [c.term for c in candidates[max_terms:]],
+        "activity_log_path": str(log_path),
+    }
 
 
 def _run_and_dispatch_review(
