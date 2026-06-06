@@ -69,6 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the post-accept hierarchy-review pass.",
     )
+    process_doc.add_argument(
+        "--consensus-passes",
+        type=int,
+        default=None,
+        help=(
+            "Override the runtime config's hierarchy_consensus_passes "
+            "(default 3) for this run. Pass 1 for single-pass (faster, "
+            "no direction-variance protection)."
+        ),
+    )
 
     subcommands.add_parser(
         "process-input",
@@ -102,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             args.document_id,
             max_terms=args.max_terms,
             skip_hierarchy_review=args.no_hierarchy_review,
+            consensus_passes_override=args.consensus_passes,
         )
 
     if args.command == "list-ontology":
@@ -160,6 +171,7 @@ def _process_document(
     *,
     max_terms: int,
     skip_hierarchy_review: bool = False,
+    consensus_passes_override: int | None = None,
 ) -> int:
     from mahalath.actions import dispatch
     from mahalath.adapters import make_adapter
@@ -168,7 +180,10 @@ def _process_document(
     from mahalath.db.repositories import DocumentRepository
     from mahalath.debate import DebateError, run_debate
     from mahalath.extraction import ExtractionError, extract_candidate_terms
-    from mahalath.hierarchy import HierarchyReviewError, run_hierarchy_review
+    from mahalath.hierarchy import (
+        HierarchyReviewError,
+        run_hierarchy_review_consensus,
+    )
     from mahalath.ontology import persist_debate_result
 
     try:
@@ -239,8 +254,9 @@ def _process_document(
                     db, adapter, config, persist_result.mpl_label,
                     source_decision_log_id=debate_result.decision_log_id,
                     dispatch_fn=dispatch,
-                    review_fn=run_hierarchy_review,
+                    review_fn=run_hierarchy_review_consensus,
                     review_exc=HierarchyReviewError,
+                    consensus_passes_override=consensus_passes_override,
                 )
 
             debated.append(term_record)
@@ -276,6 +292,7 @@ def _run_and_dispatch_review(
     dispatch_fn,
     review_fn,
     review_exc,
+    consensus_passes_override: int | None = None,
 ) -> dict[str, Any]:
     try:
         review = review_fn(
@@ -283,6 +300,7 @@ def _run_and_dispatch_review(
             db,
             adapter,
             config.runtime,
+            n_passes=consensus_passes_override,
             triggered_by="post_accept",
             source_decision_log_id=source_decision_log_id,
         )
@@ -291,7 +309,7 @@ def _run_and_dispatch_review(
 
     action_records: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
-    for action in review.actions:
+    for action in review.consensus_actions:
         dispatch_result = dispatch_fn(action, db)
         status_counts[dispatch_result.status] = (
             status_counts.get(dispatch_result.status, 0) + 1
@@ -306,12 +324,21 @@ def _run_and_dispatch_review(
             "proposal_id": dispatch_result.proposal_id,
         })
 
+    per_pass_summary = [
+        [
+            {"type": a.action_type, "payload": a.payload(), "conf": a.confidence}
+            for a in pass_actions
+        ]
+        for pass_actions in review.per_pass_actions
+    ]
+
     return {
-        "review_id": review.review_id,
-        "duration_ms": review.duration_ms,
-        "actions_proposed": len(review.actions),
+        "review_ids": review.review_ids,
+        "n_passes": review.n_passes,
+        "total_duration_ms": review.total_duration_ms,
+        "consensus_actions_count": len(review.consensus_actions),
+        "per_pass_proposals": per_pass_summary,
         "status_counts": status_counts,
-        "no_actions_reason": review.no_actions_reason,
         "actions": action_records,
     }
 
@@ -365,20 +392,32 @@ def _write_process_log(
         hr = d.get("hierarchy_review")
         if hr:
             lines.append("")
-            lines.append("**Hierarchy review:**")
+            lines.append("**Hierarchy review (multi-pass consensus):**")
             if "error" in hr:
                 lines.append(f"- error: {hr['error']}")
             else:
-                lines.append(f"- review_id: `{hr['review_id']}`")
-                lines.append(f"- actions proposed: {hr['actions_proposed']}")
+                lines.append(f"- n_passes: {hr['n_passes']}")
+                lines.append(
+                    f"- consensus actions: {hr['consensus_actions_count']}"
+                )
                 if hr.get("status_counts"):
                     lines.append(
                         f"- status counts: {hr['status_counts']}"
                     )
-                if hr.get("no_actions_reason"):
-                    lines.append(
-                        f"- no_actions_reason: {hr['no_actions_reason']}"
-                    )
+                if hr.get("per_pass_proposals"):
+                    lines.append("- per-pass proposals (for diagnostics):")
+                    for i, pp in enumerate(hr["per_pass_proposals"], 1):
+                        if not pp:
+                            lines.append(f"  - pass {i}: (no actions)")
+                            continue
+                        for proposal in pp:
+                            payload_summary = ", ".join(
+                                f"{k}={v!r}" for k, v in proposal["payload"].items()
+                            )
+                            lines.append(
+                                f"  - pass {i}: `{proposal['type']}`"
+                                f"({payload_summary}) conf={proposal['conf']}"
+                            )
                 for a in hr.get("actions", []):
                     payload_summary = ", ".join(
                         f"{k}={v!r}" for k, v in a["payload"].items()

@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
 
@@ -54,6 +55,28 @@ class HierarchyReviewResult:
     no_actions_reason: str | None = None
     raw_response: str = ""
     duration_ms: int = 0
+
+
+@dataclass
+class ConsensusHierarchyReviewResult:
+    """Result of N independent hierarchy review passes aggregated by consensus.
+
+    `consensus_actions` are the actions proposed identically by every
+    pass (unanimous agreement on action type and exact payload). Their
+    confidence is the minimum across the passes that proposed them —
+    the most pessimistic agent governs, matching the Stage 1 debate
+    aggregation policy (DQ-003).
+
+    `per_pass_actions` keeps each pass's raw output for diagnostics
+    when consensus fails.
+    """
+
+    focus_label: str
+    review_ids: list[str] = field(default_factory=list)
+    consensus_actions: list[Action] = field(default_factory=list)
+    per_pass_actions: list[list[Action]] = field(default_factory=list)
+    total_duration_ms: int = 0
+    n_passes: int = 1
 
 
 def run_hierarchy_review(
@@ -125,6 +148,106 @@ def run_hierarchy_review(
         raw_response=response.text,
         duration_ms=duration_ms,
     )
+
+
+def run_hierarchy_review_consensus(
+    focus_label: str,
+    db: Database,
+    adapter: Adapter,
+    runtime: RuntimeConfig,
+    *,
+    n_passes: int | None = None,
+    triggered_by: str = "post_accept",
+    source_decision_log_id: str | None = None,
+) -> ConsensusHierarchyReviewResult:
+    """Run hierarchy review N times; keep only unanimously-agreed actions.
+
+    Action identity for consensus is (action_type, payload-as-frozen-pairs).
+    Two actions with swapped child/parent labels are DIFFERENT proposals
+    and will not aggregate — exactly the property we want when the
+    small-model failure mode is "right relationship, wrong direction."
+
+    Each pass writes its own OntologyReview row, so the audit trail
+    captures all N prompts and responses regardless of whether
+    consensus emerges.
+    """
+    effective_passes = (
+        n_passes if n_passes is not None else runtime.hierarchy_consensus_passes
+    )
+    if effective_passes < 1:
+        raise ValueError("n_passes must be >= 1")
+
+    review_ids: list[str] = []
+    per_pass_actions: list[list[Action]] = []
+    total_duration = 0
+    for _ in range(effective_passes):
+        result = run_hierarchy_review(
+            focus_label, db, adapter, runtime,
+            triggered_by=triggered_by,
+            source_decision_log_id=source_decision_log_id,
+        )
+        review_ids.append(result.review_id)
+        per_pass_actions.append(result.actions)
+        total_duration += result.duration_ms
+
+    consensus_actions = _consensus(per_pass_actions, effective_passes)
+
+    return ConsensusHierarchyReviewResult(
+        focus_label=focus_label,
+        review_ids=review_ids,
+        consensus_actions=consensus_actions,
+        per_pass_actions=per_pass_actions,
+        total_duration_ms=total_duration,
+        n_passes=effective_passes,
+    )
+
+
+def _consensus(per_pass: list[list[Action]], n_passes: int) -> list[Action]:
+    """Return actions proposed identically in every pass.
+
+    Within-pass duplicates (same key proposed twice in a single pass)
+    are deduped before counting, so an over-eager pass cannot push an
+    action over the threshold on its own.
+    """
+    if n_passes <= 1:
+        # No consensus to compute; flatten and return.
+        return [a for pass_actions in per_pass for a in pass_actions]
+
+    occurrences: dict[tuple, list[Action]] = defaultdict(list)
+    for pass_actions in per_pass:
+        seen_in_pass: set[tuple] = set()
+        for action in pass_actions:
+            key = _action_key(action)
+            if key in seen_in_pass:
+                continue
+            seen_in_pass.add(key)
+            occurrences[key].append(action)
+
+    consensus: list[Action] = []
+    for key, actions in occurrences.items():
+        if len(actions) < n_passes:
+            continue
+        # Use the last pass's action as the representative; replace
+        # confidence with the minimum across passes (DQ-003 aggregation).
+        representative = actions[-1]
+        min_confidence = min(a.confidence for a in actions)
+        consensus.append(replace(representative, confidence=min_confidence))
+    return consensus
+
+
+def _action_key(action: Action) -> tuple:
+    payload_items = tuple(
+        sorted((k, _hashable(v)) for k, v in action.payload().items())
+    )
+    return (action.action_type, payload_items)
+
+
+def _hashable(value: Any) -> Any:
+    if isinstance(value, list):
+        return tuple(value)
+    if isinstance(value, dict):
+        return tuple(sorted(value.items()))
+    return value
 
 
 # --- Snapshot + prompt -----------------------------------------------------

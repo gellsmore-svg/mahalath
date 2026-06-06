@@ -52,6 +52,10 @@ class RuntimeConfig(BaseModel):
     max_iterations_per_term: int = 50
     confidence_threshold: float = 8.0
     confidence_scale_max: float = 10.0
+    # Hierarchy review consensus: number of independent review passes
+    # required to agree (unanimously) on an action before it is eligible
+    # for dispatch. Set to 1 to disable consensus (single-pass behavior).
+    hierarchy_consensus_passes: int = 3
     ollama_executable: Path = Path(
         "/mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe"
     )

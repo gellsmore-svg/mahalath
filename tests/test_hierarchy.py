@@ -11,8 +11,11 @@ import json
 
 import pytest
 
-from mahalath.actions import ProposeParent
+from dataclasses import dataclass, field
+
+from mahalath.actions import ProposeAlias, ProposeParent
 from mahalath.adapters import MockAdapter
+from mahalath.adapters.base import AdapterResponse
 from mahalath.config import RuntimeConfig
 from mahalath.db.models import DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
@@ -23,7 +26,39 @@ from mahalath.hierarchy import (
     HierarchyReviewError,
     build_review_prompt,
     run_hierarchy_review,
+    run_hierarchy_review_consensus,
 )
+
+
+@dataclass
+class SequentialMockAdapter:
+    """MockAdapter that returns a different canned response per call.
+
+    Cycles back to the start if exhausted, so a single-cycle response
+    list is enough for most tests. Useful for exercising consensus
+    aggregation across passes that disagree.
+    """
+
+    responses: list[str]
+    name: str = "sequential_mock"
+    default_model: str = "mock-model"
+    calls: list = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._index = 0
+
+    def generate(
+        self, prompt, *, model=None, timeout_seconds=None, want_json=False
+    ):
+        self.calls.append({
+            "prompt": prompt, "model": model,
+            "timeout_seconds": timeout_seconds, "want_json": want_json,
+        })
+        text = self.responses[self._index % len(self.responses)]
+        self._index += 1
+        return AdapterResponse(
+            text=text, model=model or self.default_model, duration_ms=0
+        )
 
 
 def _seed(mongo_db) -> None:
@@ -152,6 +187,136 @@ def test_run_hierarchy_review_raises_when_focus_missing(mongo_db) -> None:
     runtime = RuntimeConfig()
     with pytest.raises(HierarchyReviewError):
         run_hierarchy_review("MPL-999", mongo_db, adapter, runtime)
+
+
+def test_consensus_passes_through_when_all_agree(mongo_db) -> None:
+    _seed(mongo_db)
+    response = _review_response([{
+        "type": "propose_parent",
+        "child_label": "MPL-002", "parent_label": "MPL-001",
+        "reason": "RS specialises Substrate", "confidence": 8.7,
+    }])
+    adapter = SequentialMockAdapter(responses=[response, response, response])
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=3
+    )
+    assert result.n_passes == 3
+    assert len(result.review_ids) == 3
+    assert len(result.consensus_actions) == 1
+    [action] = result.consensus_actions
+    assert isinstance(action, ProposeParent)
+    assert action.parent_label == "MPL-001"
+    assert action.confidence == 8.7  # min of three 8.7s
+
+
+def test_consensus_takes_minimum_confidence(mongo_db) -> None:
+    _seed(mongo_db)
+    base = {
+        "type": "propose_parent",
+        "child_label": "MPL-002", "parent_label": "MPL-001",
+        "reason": "x",
+    }
+    adapter = SequentialMockAdapter(responses=[
+        _review_response([{**base, "confidence": 9.5}]),
+        _review_response([{**base, "confidence": 8.2}]),
+        _review_response([{**base, "confidence": 9.0}]),
+    ])
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=3
+    )
+    assert len(result.consensus_actions) == 1
+    assert result.consensus_actions[0].confidence == 8.2  # min of 9.5, 8.2, 9.0
+
+
+def test_consensus_drops_action_when_one_pass_disagrees(mongo_db) -> None:
+    _seed(mongo_db)
+    adapter = SequentialMockAdapter(responses=[
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-002", "parent_label": "MPL-001",
+            "reason": "x", "confidence": 9.0,
+        }]),
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-002", "parent_label": "MPL-001",
+            "reason": "x", "confidence": 8.5,
+        }]),
+        # Pass 3: silence — no action proposed.
+        _review_response([]),
+    ])
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=3
+    )
+    # 2/3 is not unanimous; consensus rejects.
+    assert result.consensus_actions == []
+
+
+def test_consensus_treats_direction_flip_as_disagreement(mongo_db) -> None:
+    """Direction-variance is the headline use case: model proposes
+    X→child of Y in one pass and Y→child of X in another. Strict
+    unanimity must reject both."""
+    _seed(mongo_db)
+    adapter = SequentialMockAdapter(responses=[
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-002", "parent_label": "MPL-001",
+            "reason": "x", "confidence": 8.5,
+        }]),
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-001", "parent_label": "MPL-002",
+            "reason": "x", "confidence": 8.5,
+        }]),
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-002", "parent_label": "MPL-001",
+            "reason": "x", "confidence": 8.5,
+        }]),
+    ])
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=3
+    )
+    # Direction A: 2 passes. Direction B: 1 pass. Neither is unanimous.
+    assert result.consensus_actions == []
+    # But all three pass results are preserved for diagnostics.
+    assert len(result.per_pass_actions) == 3
+
+
+def test_consensus_n_passes_one_is_passthrough(mongo_db) -> None:
+    _seed(mongo_db)
+    adapter = SequentialMockAdapter(responses=[
+        _review_response([{
+            "type": "propose_parent",
+            "child_label": "MPL-002", "parent_label": "MPL-001",
+            "reason": "x", "confidence": 7.0,
+        }])
+    ])
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=1
+    )
+    # Single-pass mode: everything passes through, confidence preserved.
+    assert len(result.consensus_actions) == 1
+    assert result.consensus_actions[0].confidence == 7.0
+
+
+def test_consensus_persists_one_review_record_per_pass(mongo_db) -> None:
+    _seed(mongo_db)
+    response = _review_response([])
+    adapter = SequentialMockAdapter(responses=[response] * 3)
+    runtime = RuntimeConfig()
+    result = run_hierarchy_review_consensus(
+        "MPL-002", mongo_db, adapter, runtime, n_passes=3
+    )
+    assert len(result.review_ids) == 3
+    # Every review_id is queryable individually.
+    review_repo = OntologyReviewRepository(mongo_db)
+    for rid in result.review_ids:
+        assert review_repo.get(rid) is not None
 
 
 def test_run_hierarchy_review_handles_empty_ontology(mongo_db) -> None:
