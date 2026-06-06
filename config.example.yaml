@@ -1,0 +1,58 @@
+mongo:
+  uri: mongodb://localhost:27017
+  # Distinct from Mnemosyne's database; same Mongo instance is fine.
+  # See ADR-017.
+  database: mahalath_dev
+
+paths:
+  # Operator drops new documents into input/. The ingestion worker
+  # moves accepted files to processed/. See ADR-011, ADR-012.
+  input: input
+  processed: processed
+  ontology: ontology
+  logs: logs
+  undecided: undecided
+
+runtime:
+  # Model adapter and model name. Initial runtime is Ollama; see ADR-005.
+  # llama-cpp-python remains an optional future path.
+  model_adapter: ollama_cli
+  model: gemma3:1b
+
+  # Multi-agent debate roles. Names per requirements §3.2 and DQ-001.
+  # Moderator default off until first iteration cap is hit or first
+  # contested split is detected. See DQ-001.
+  agents:
+    precision_critic:
+      enabled: true
+      system_prompt_path: null   # uses built-in default when null
+    synthesis_explorer:
+      enabled: true
+      system_prompt_path: null
+    moderator:
+      enabled: false
+      system_prompt_path: null
+
+  # Debate loop controls. Defaults per ADR-009 (iteration cap) and
+  # ADR-010 (confidence threshold).
+  max_iterations_per_term: 25
+  confidence_threshold: 8.0
+  confidence_scale_max: 10.0
+
+  # Ollama executable lives on the Windows side under WSL; this matches
+  # the Mnemosyne convention.
+  ollama_executable: /mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe
+  ollama_base_url: http://localhost:11434
+  ollama_timeout_seconds: 180
+
+ingestion:
+  # APScheduler-style polling cadence for the watched input folder.
+  poll_interval_seconds: 60
+  # SHA-256 duplicate rejection per ADR-016.
+  duplicate_rejection: sha256
+
+rem:
+  # REM-style overnight processing cadence per requirements §3.4 and
+  # DQ-009. Default fixed schedule.
+  enabled: true
+  cron: "0 2 * * *"     # 02:00 local time

@@ -1,0 +1,48 @@
+# Runtime folders (contents are local, but the folders themselves are
+# committed via .gitkeep)
+input/*
+processed/*
+ontology/*
+logs/*
+undecided/*
+!input/.gitkeep
+!processed/.gitkeep
+!ontology/.gitkeep
+!logs/.gitkeep
+!undecided/.gitkeep
+
+# Local config (config.example.yaml is committed)
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

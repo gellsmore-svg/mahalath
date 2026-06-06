@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mahalath"
+version = "0.0.1"
+description = "Self-sustaining multi-agent ontology builder with REM-style refinement."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [
+    {name = "gellsmore-svg"},
+]
+dependencies = [
+    "pymongo>=4.6",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "apscheduler>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[project.scripts]
+mahalath = "mahalath.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mahalath = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
