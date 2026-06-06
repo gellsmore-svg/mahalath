@@ -205,4 +205,9 @@ class ActionProposal(_MahalathModel):
     applied_at: datetime | None = None
     rejection_reason: str | None = None
     application_result: dict[str, Any] = Field(default_factory=dict)
+    # Operator decision trail. operator_decision is one of:
+    # accepted | rejected | rolled_back | None (no operator action taken).
+    operator_decision: str | None = None
+    operator_decision_at: datetime | None = None
+    operator_note: str | None = None
     schema_version: int = SCHEMA_VERSION

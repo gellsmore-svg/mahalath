@@ -2,12 +2,22 @@
 
 Commands available:
 
-    mahalath db-ping                           MongoDB connectivity check
-    mahalath show-config                       print loaded config as JSON
-    mahalath ingest-one <path>                 ingest a single Markdown document
-    mahalath process-document <document_id>    extract candidate terms, debate
-                                               and persist accepted entries
-    mahalath list-ontology                     list ontology entries as JSON
+    mahalath db-ping                                MongoDB connectivity check
+    mahalath show-config                            print loaded config as JSON
+    mahalath ingest-one <path>                      ingest a single Markdown
+                                                    document
+    mahalath process-document <document_id>         extract terms, debate, and
+                                                    persist accepted entries
+                                                    with hierarchy review
+    mahalath list-ontology                          list ontology entries
+    mahalath list-proposals [--status STATUS]       list action proposals
+    mahalath show-proposal <proposal_id>            show full proposal record
+    mahalath accept-proposal <proposal_id>          apply a pending_review
+       [--note TEXT]                                proposal as operator
+    mahalath reject-proposal <proposal_id>          mark a pending_review
+       [--note TEXT]                                proposal rejected
+    mahalath rollback-proposal <proposal_id>        undo an applied proposal
+       [--note TEXT]
 
 Stage 1 placeholders (raise an explicit "not yet implemented" error):
 
@@ -22,6 +32,7 @@ Exit codes (in addition to the conventional 0=success):
     5  source file not found / not readable (ingest-one)
     6  document_id not found in DB (process-document)
     7  archived source file missing on disk (process-document)
+    9  proposal-workflow error (proposal not found, wrong status, etc.)
 """
 
 from __future__ import annotations
@@ -88,6 +99,35 @@ def main(argv: list[str] | None = None) -> int:
         "list-ontology", help="List ontology entries."
     )
 
+    list_proposals_parser = subcommands.add_parser(
+        "list-proposals", help="List action proposals from action_proposals."
+    )
+    list_proposals_parser.add_argument(
+        "--status",
+        choices=["proposed", "applied", "pending_review", "invalid",
+                 "rejected", "rolled_back"],
+        default=None,
+        help="Filter by status (default: show all).",
+    )
+
+    show_proposal_parser = subcommands.add_parser(
+        "show-proposal",
+        help="Print a single ActionProposal record as JSON.",
+    )
+    show_proposal_parser.add_argument("proposal_id")
+
+    for cmd, help_text in [
+        ("accept-proposal", "Accept a pending_review proposal (applies it)."),
+        ("reject-proposal", "Reject a pending_review proposal."),
+        ("rollback-proposal", "Undo an applied proposal."),
+    ]:
+        parser_ = subcommands.add_parser(cmd, help=help_text)
+        parser_.add_argument("proposal_id")
+        parser_.add_argument(
+            "--note", default=None,
+            help="Optional operator note recorded with the decision.",
+        )
+
     args = parser.parse_args(argv)
 
     if args.command is None:
@@ -117,6 +157,27 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list-ontology":
         return _list_ontology(config)
+
+    if args.command == "list-proposals":
+        return _list_proposals(config, status=args.status)
+
+    if args.command == "show-proposal":
+        return _show_proposal(config, args.proposal_id)
+
+    if args.command == "accept-proposal":
+        return _operator_decision(
+            config, args.proposal_id, kind="accept", note=args.note
+        )
+
+    if args.command == "reject-proposal":
+        return _operator_decision(
+            config, args.proposal_id, kind="reject", note=args.note
+        )
+
+    if args.command == "rollback-proposal":
+        return _operator_decision(
+            config, args.proposal_id, kind="rollback", note=args.note
+        )
 
     if args.command in {"debate-one", "process-input"}:
         print(
@@ -433,6 +494,117 @@ def _write_process_log(
 
     log_path.write_text("\n".join(lines), encoding="utf-8")
     return log_path
+
+
+def _list_proposals(config: AppConfig, *, status: str | None) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.proposals import list_proposals
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        proposals = list_proposals(db, status=status)
+        payload = {
+            "count": len(proposals),
+            "status_filter": status,
+            "proposals": [_proposal_summary(p) for p in proposals],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _show_proposal(config: AppConfig, proposal_id: str) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.proposals import ProposalError, get_proposal
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        proposal = get_proposal(proposal_id, db)
+    except ProposalError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 9
+    finally:
+        # Keep db open for the print below; close after.
+        pass
+
+    try:
+        print(json.dumps(proposal.model_dump(), indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _operator_decision(
+    config: AppConfig, proposal_id: str, *, kind: str, note: str | None
+) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.proposals import (
+        ProposalError,
+        accept_proposal,
+        reject_proposal,
+        rollback_proposal,
+    )
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    fn = {
+        "accept": accept_proposal,
+        "reject": reject_proposal,
+        "rollback": rollback_proposal,
+    }[kind]
+
+    try:
+        result = fn(proposal_id, db, note=note)
+    except ProposalError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 9
+    finally:
+        # close after we print success
+        pass
+
+    try:
+        print(json.dumps({
+            "ok": True,
+            "proposal_id": result.proposal_id,
+            "previous_status": result.previous_status,
+            "new_status": result.new_status,
+            "detail": result.detail,
+            "application_result": result.application_result,
+            "rollback_result": result.rollback_result,
+        }, indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _proposal_summary(p) -> dict[str, Any]:
+    return {
+        "proposal_id": p.proposal_id,
+        "action_type": p.action_type,
+        "payload": p.payload,
+        "confidence": p.confidence,
+        "status": p.status,
+        "proposed_by": p.proposed_by,
+        "reason": p.reason,
+        "operator_decision": p.operator_decision,
+        "operator_note": p.operator_note,
+        "created_at": p.created_at,
+    }
 
 
 def _list_ontology(config: AppConfig) -> int:
