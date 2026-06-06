@@ -237,10 +237,11 @@ def _process_document(
     from mahalath.actions import dispatch
     from mahalath.adapters import make_adapter
     from mahalath.adapters.base import AdapterError
+    from mahalath.chunking import extract_candidates_chunked
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.db.repositories import DocumentRepository
     from mahalath.debate import DebateError, run_debate
-    from mahalath.extraction import ExtractionError, extract_candidate_terms
+    from mahalath.extraction import ExtractionError
     from mahalath.hierarchy import (
         HierarchyReviewError,
         run_hierarchy_review_consensus,
@@ -272,7 +273,7 @@ def _process_document(
         adapter = make_adapter(config.runtime.model_adapter, config)
 
         try:
-            candidates = extract_candidate_terms(text, adapter)
+            candidates = extract_candidates_chunked(text, adapter)
         except ExtractionError as exc:
             print(f"mahalath: extraction failed: {exc}", file=sys.stderr)
             return 8
