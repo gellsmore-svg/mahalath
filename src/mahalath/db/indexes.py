@@ -61,4 +61,21 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         ),
     ]
 
+    created["action_proposals"] = [
+        db.action_proposals.create_index("proposal_id", unique=True),
+        db.action_proposals.create_index("action_type"),
+        db.action_proposals.create_index("status"),
+        db.action_proposals.create_index("source_decision_log_id"),
+        db.action_proposals.create_index("source_ontology_review_id"),
+        db.action_proposals.create_index([("created_at", DESCENDING)]),
+    ]
+
+    created["ontology_reviews"] = [
+        db.ontology_reviews.create_index("review_id", unique=True),
+        db.ontology_reviews.create_index("triggered_by"),
+        db.ontology_reviews.create_index("focus_mpl_label"),
+        db.ontology_reviews.create_index("source_decision_log_id"),
+        db.ontology_reviews.create_index([("created_at", DESCENDING)]),
+    ]
+
     return created

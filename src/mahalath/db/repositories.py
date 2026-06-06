@@ -17,10 +17,12 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 
 from mahalath.db.models import (
+    ActionProposal,
     AgentExchange,
     DecisionLogEntry,
     DocumentRecord,
     OntologyEntry,
+    OntologyReview,
     OntologyTreeEdge,
     UndecidedItem,
 )
@@ -148,3 +150,59 @@ class UndecidedQueueRepository:
             .limit(limit)
         )
         return [UndecidedItem.model_validate(doc) for doc in cursor]
+
+
+class OntologyReviewRepository:
+    def __init__(self, db: Database) -> None:
+        self._col: Collection = db.ontology_reviews
+
+    def insert(self, review: OntologyReview) -> OntologyReview:
+        self._col.insert_one(review.model_dump())
+        return review
+
+    def get(self, review_id: str) -> OntologyReview | None:
+        doc = self._col.find_one({"review_id": review_id})
+        return OntologyReview.model_validate(doc) if doc else None
+
+    def for_decision(self, decision_log_id: str) -> list[OntologyReview]:
+        return [
+            OntologyReview.model_validate(doc)
+            for doc in self._col.find(
+                {"source_decision_log_id": decision_log_id}
+            ).sort("created_at", 1)
+        ]
+
+
+class ActionProposalRepository:
+    def __init__(self, db: Database) -> None:
+        self._col: Collection = db.action_proposals
+
+    def insert(self, proposal: ActionProposal) -> ActionProposal:
+        self._col.insert_one(proposal.model_dump())
+        return proposal
+
+    def get(self, proposal_id: str) -> ActionProposal | None:
+        doc = self._col.find_one({"proposal_id": proposal_id})
+        return ActionProposal.model_validate(doc) if doc else None
+
+    def by_status(self, status: str) -> list[ActionProposal]:
+        return [
+            ActionProposal.model_validate(doc)
+            for doc in self._col.find({"status": status}).sort("created_at", 1)
+        ]
+
+    def for_decision(self, decision_log_id: str) -> list[ActionProposal]:
+        return [
+            ActionProposal.model_validate(doc)
+            for doc in self._col.find(
+                {"source_decision_log_id": decision_log_id}
+            ).sort("created_at", 1)
+        ]
+
+    def for_review(self, review_id: str) -> list[ActionProposal]:
+        return [
+            ActionProposal.model_validate(doc)
+            for doc in self._col.find(
+                {"source_ontology_review_id": review_id}
+            ).sort("created_at", 1)
+        ]

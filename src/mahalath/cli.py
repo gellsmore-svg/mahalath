@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="How many candidate terms to debate this run (default: 1).",
     )
+    process_doc.add_argument(
+        "--no-hierarchy-review",
+        action="store_true",
+        help="Skip the post-accept hierarchy-review pass.",
+    )
 
     subcommands.add_parser(
         "process-input",
@@ -92,7 +97,12 @@ def main(argv: list[str] | None = None) -> int:
         return _ingest_one(config, Path(args.path))
 
     if args.command == "process-document":
-        return _process_document(config, args.document_id, max_terms=args.max_terms)
+        return _process_document(
+            config,
+            args.document_id,
+            max_terms=args.max_terms,
+            skip_hierarchy_review=args.no_hierarchy_review,
+        )
 
     if args.command == "list-ontology":
         return _list_ontology(config)
@@ -144,15 +154,21 @@ def _ingest_one(config: AppConfig, source_path: Path) -> int:
     return 0
 
 
-def _process_document(config: AppConfig, document_id: str, *, max_terms: int) -> int:
-    from datetime import datetime, timezone
-
+def _process_document(
+    config: AppConfig,
+    document_id: str,
+    *,
+    max_terms: int,
+    skip_hierarchy_review: bool = False,
+) -> int:
+    from mahalath.actions import dispatch
     from mahalath.adapters import make_adapter
     from mahalath.adapters.base import AdapterError
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.db.repositories import DocumentRepository
     from mahalath.debate import DebateError, run_debate
     from mahalath.extraction import ExtractionError, extract_candidate_terms
+    from mahalath.hierarchy import HierarchyReviewError, run_hierarchy_review
     from mahalath.ontology import persist_debate_result
 
     try:
@@ -204,7 +220,7 @@ def _process_document(config: AppConfig, document_id: str, *, max_terms: int) ->
                 continue
 
             persist_result = persist_debate_result(debate_result, db, config.runtime)
-            debated.append({
+            term_record = {
                 "term": candidate.term,
                 "outcome": debate_result.outcome,
                 "final_confidence": debate_result.final_confidence,
@@ -212,7 +228,22 @@ def _process_document(config: AppConfig, document_id: str, *, max_terms: int) ->
                 "iterations_used": debate_result.iterations_used,
                 "mpl_label": persist_result.mpl_label,
                 "decision_log_id": debate_result.decision_log_id,
-            })
+            }
+
+            if (
+                not skip_hierarchy_review
+                and persist_result.outcome == "accepted"
+                and persist_result.mpl_label is not None
+            ):
+                term_record["hierarchy_review"] = _run_and_dispatch_review(
+                    db, adapter, config, persist_result.mpl_label,
+                    source_decision_log_id=debate_result.decision_log_id,
+                    dispatch_fn=dispatch,
+                    review_fn=run_hierarchy_review,
+                    review_exc=HierarchyReviewError,
+                )
+
+            debated.append(term_record)
 
         doc_repo.mark_processed(document_id)
 
@@ -233,6 +264,56 @@ def _process_document(config: AppConfig, document_id: str, *, max_terms: int) ->
         return 0
     finally:
         close_all()
+
+
+def _run_and_dispatch_review(
+    db,
+    adapter,
+    config: AppConfig,
+    focus_label: str,
+    *,
+    source_decision_log_id: str,
+    dispatch_fn,
+    review_fn,
+    review_exc,
+) -> dict[str, Any]:
+    try:
+        review = review_fn(
+            focus_label,
+            db,
+            adapter,
+            config.runtime,
+            triggered_by="post_accept",
+            source_decision_log_id=source_decision_log_id,
+        )
+    except review_exc as exc:
+        return {"error": str(exc)}
+
+    action_records: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for action in review.actions:
+        dispatch_result = dispatch_fn(action, db)
+        status_counts[dispatch_result.status] = (
+            status_counts.get(dispatch_result.status, 0) + 1
+        )
+        action_records.append({
+            "type": dispatch_result.action_type,
+            "status": dispatch_result.status,
+            "detail": dispatch_result.detail,
+            "payload": dispatch_result.payload,
+            "confidence": action.confidence,
+            "reason": action.reason,
+            "proposal_id": dispatch_result.proposal_id,
+        })
+
+    return {
+        "review_id": review.review_id,
+        "duration_ms": review.duration_ms,
+        "actions_proposed": len(review.actions),
+        "status_counts": status_counts,
+        "no_actions_reason": review.no_actions_reason,
+        "actions": action_records,
+    }
 
 
 def _write_process_log(
@@ -280,6 +361,35 @@ def _write_process_log(
             lines.append(f"  > {d['final_definition']}")
         if d.get("error"):
             lines.append(f"- error: {d['error']}")
+
+        hr = d.get("hierarchy_review")
+        if hr:
+            lines.append("")
+            lines.append("**Hierarchy review:**")
+            if "error" in hr:
+                lines.append(f"- error: {hr['error']}")
+            else:
+                lines.append(f"- review_id: `{hr['review_id']}`")
+                lines.append(f"- actions proposed: {hr['actions_proposed']}")
+                if hr.get("status_counts"):
+                    lines.append(
+                        f"- status counts: {hr['status_counts']}"
+                    )
+                if hr.get("no_actions_reason"):
+                    lines.append(
+                        f"- no_actions_reason: {hr['no_actions_reason']}"
+                    )
+                for a in hr.get("actions", []):
+                    payload_summary = ", ".join(
+                        f"{k}={v!r}" for k, v in a["payload"].items()
+                    )
+                    lines.append(
+                        f"  - `{a['type']}`({payload_summary}) "
+                        f"conf={a['confidence']} → **{a['status']}** "
+                        f"({a['detail']})"
+                    )
+                    if a.get("reason"):
+                        lines.append(f"    > {a['reason']}")
         lines.append("")
 
     log_path.write_text("\n".join(lines), encoding="utf-8")

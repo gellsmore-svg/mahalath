@@ -16,10 +16,12 @@ default per ADR-017); the same MongoDB instance hosts both.
 from mahalath.db.client import close_all, get_client, get_database
 from mahalath.db.indexes import ensure_indexes
 from mahalath.db.repositories import (
+    ActionProposalRepository,
     AgentExchangeRepository,
     DecisionLogRepository,
     DocumentRepository,
     OntologyEntryRepository,
+    OntologyReviewRepository,
     OntologyTreeRepository,
     UndecidedQueueRepository,
 )
@@ -29,10 +31,12 @@ __all__ = [
     "get_client",
     "get_database",
     "ensure_indexes",
+    "ActionProposalRepository",
     "AgentExchangeRepository",
     "DecisionLogRepository",
     "DocumentRepository",
     "OntologyEntryRepository",
+    "OntologyReviewRepository",
     "OntologyTreeRepository",
     "UndecidedQueueRepository",
 ]
