@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from mahalath.adapters.base import Adapter, AdapterError
 
 DEFAULT_MAX_TERMS = 20
-DEFAULT_CHAR_BUDGET = 50_000
+# Reduced from 50_000 after the 2026-06-06 rs-cbo-beginner-v1.md run
+# showed gemma4:e2b reliably stops extracting and starts summarising
+# when the prompt exceeds ~30K chars; at ~46K it gives up entirely. The
+# proper fix is heading-aware chunking (deferred to Stage 2); 30K is the
+# largest safe single-shot budget on the current model.
+DEFAULT_CHAR_BUDGET = 30_000
 
 
 @dataclass(frozen=True)
@@ -80,33 +85,45 @@ def build_extraction_prompt(
 ) -> str:
     """Construct the extraction prompt.
 
-    Exposed so tests can assert prompt content and so the debate loop
-    later can reuse the same builder for reflection passes.
+    Document text is placed FIRST and the task instructions LAST, so the
+    model's most recent context is "what to do" rather than "what to
+    read". Empirically this prevents the failure mode where the model
+    ignores extraction instructions and summarises the document instead
+    (observed on gemma4:e2b above ~35K characters with the instructions
+    leading).
     """
     truncated = document_text[:char_budget]
     if len(document_text) > char_budget:
         truncated += "\n[...document truncated...]\n"
 
     return (
-        "You are a domain-glossary extractor. Read the document below and "
+        "Document:\n"
+        "<<<\n"
+        f"{truncated}\n"
+        ">>>\n"
+        "\n"
+        "You are a domain-glossary extractor. Read the document ABOVE and "
         "list the candidate terms that warrant their own glossary entry: "
         "technical nouns, named concepts, multi-word phrases of art, "
         "domain-specific jargon.\n"
         "\n"
-        "Skip common English words, dates, numbers, generic verbs, and "
-        "the author's prose voice. Prefer noun phrases as written in the "
-        "source. Do not invent new terms.\n"
+        "STRICT RULES:\n"
+        "  - Each candidate must be a single noun phrase, not a sentence "
+        "or sentence fragment. If the source presents a list (e.g. \"five "
+        "kinds of X: doing, going, ...\"), the candidate is the named "
+        "concept (\"X\"), not each list item.\n"
+        "  - Skip common English words, dates, numbers, generic verbs, and "
+        "the author's prose voice.\n"
+        "  - Prefer noun phrases as written in the source. Do not invent "
+        "new terms.\n"
+        "  - Do not propose meta-vocabulary about the extraction task "
+        "(\"technical noun\", \"multi-word phrase\") as a candidate.\n"
         "\n"
         f"Return AT MOST {max_terms} candidates. Output ONLY a JSON "
         "object of the form:\n"
         '  {"candidates": [ {"term": "<noun phrase>", "context": '
         '"<one-sentence snippet from the document>"}, ... ]}\n'
-        "No preamble, no Markdown, no commentary outside the JSON.\n"
-        "\n"
-        "Document:\n"
-        "<<<\n"
-        f"{truncated}\n"
-        ">>>\n"
+        "No preamble, no Markdown, no commentary outside the JSON."
     )
 
 
