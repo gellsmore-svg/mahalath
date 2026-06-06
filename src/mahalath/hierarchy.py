@@ -88,6 +88,7 @@ def run_hierarchy_review(
     triggered_by: str = "post_accept",
     source_decision_log_id: str | None = None,
     max_snapshot_entries: int = 50,
+    style_overlay: str | None = None,
 ) -> HierarchyReviewResult:
     entries = OntologyEntryRepository(db)
     focus = entries.get(focus_label)
@@ -97,7 +98,7 @@ def run_hierarchy_review(
         )
 
     snapshot = _snapshot(entries, focus_label, limit=max_snapshot_entries)
-    prompt = build_review_prompt(snapshot, focus)
+    prompt = build_review_prompt(snapshot, focus, style_overlay=style_overlay)
 
     start = time.monotonic()
     try:
@@ -159,6 +160,7 @@ def run_hierarchy_review_consensus(
     n_passes: int | None = None,
     triggered_by: str = "post_accept",
     source_decision_log_id: str | None = None,
+    style_overlay: str | None = None,
 ) -> ConsensusHierarchyReviewResult:
     """Run hierarchy review N times; keep only unanimously-agreed actions.
 
@@ -185,6 +187,7 @@ def run_hierarchy_review_consensus(
             focus_label, db, adapter, runtime,
             triggered_by=triggered_by,
             source_decision_log_id=source_decision_log_id,
+            style_overlay=style_overlay,
         )
         review_ids.append(result.review_id)
         per_pass_actions.append(result.actions)
@@ -270,8 +273,13 @@ def _snapshot(
 
 
 def build_review_prompt(
-    snapshot: list[OntologyEntry], focus: OntologyEntry
+    snapshot: list[OntologyEntry],
+    focus: OntologyEntry,
+    *,
+    style_overlay: str | None = None,
 ) -> str:
+    from mahalath.style import render_style_block
+
     lines: list[str] = []
     lines.append("Existing ontology entries:")
     lines.append("")
@@ -287,6 +295,11 @@ def build_review_prompt(
     lines.append("")
     lines.extend(_render_entry(focus))
     lines.append("")
+
+    style_block = render_style_block(style_overlay)
+    if style_block:
+        lines.append(style_block)
+        lines.append("")
 
     lines.append(_TASK_INSTRUCTIONS)
     return "\n".join(lines)

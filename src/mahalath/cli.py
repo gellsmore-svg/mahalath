@@ -266,6 +266,7 @@ def _process_document(
         run_hierarchy_review_consensus,
     )
     from mahalath.ontology import persist_debate_result
+    from mahalath.style import load_style_overlay
 
     try:
         db = get_database(config)
@@ -290,9 +291,12 @@ def _process_document(
         text = archive_path.read_text(encoding="utf-8", errors="replace")
 
         adapter = make_adapter(config.runtime.model_adapter, config)
+        style_overlay = load_style_overlay(config)
 
         try:
-            candidates = extract_candidates_chunked(text, adapter)
+            candidates = extract_candidates_chunked(
+                text, adapter, style_overlay=style_overlay
+            )
         except ExtractionError as exc:
             print(f"mahalath: extraction failed: {exc}", file=sys.stderr)
             return 8
@@ -306,6 +310,7 @@ def _process_document(
                     source_document_id=document_id,
                     adapter=adapter,
                     runtime=config.runtime,
+                    style_overlay=style_overlay,
                 )
             except (DebateError, AdapterError) as exc:
                 debated.append({
@@ -338,6 +343,7 @@ def _process_document(
                     review_fn=run_hierarchy_review_consensus,
                     review_exc=HierarchyReviewError,
                     consensus_passes_override=consensus_passes_override,
+                    style_overlay=style_overlay,
                 )
 
             debated.append(term_record)
@@ -374,6 +380,7 @@ def _run_and_dispatch_review(
     review_fn,
     review_exc,
     consensus_passes_override: int | None = None,
+    style_overlay: str | None = None,
 ) -> dict[str, Any]:
     try:
         review = review_fn(
@@ -384,6 +391,7 @@ def _run_and_dispatch_review(
             n_passes=consensus_passes_override,
             triggered_by="post_accept",
             source_decision_log_id=source_decision_log_id,
+            style_overlay=style_overlay,
         )
     except review_exc as exc:
         return {"error": str(exc)}

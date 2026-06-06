@@ -54,6 +54,7 @@ def extract_candidate_terms(
     char_budget: int = DEFAULT_CHAR_BUDGET,
     model: str | None = None,
     require_term_in_document: bool = True,
+    style_overlay: str | None = None,
 ) -> list[CandidateTerm]:
     """Return a deduped list of candidate terms suggested by the model.
 
@@ -64,7 +65,10 @@ def extract_candidate_terms(
     list. Set False if a paraphrasing model is being used.
     """
     prompt = build_extraction_prompt(
-        document_text, max_terms=max_terms, char_budget=char_budget
+        document_text,
+        max_terms=max_terms,
+        char_budget=char_budget,
+        style_overlay=style_overlay,
     )
     try:
         response = adapter.generate(prompt, want_json=True, model=model)
@@ -82,6 +86,7 @@ def build_extraction_prompt(
     *,
     max_terms: int = DEFAULT_MAX_TERMS,
     char_budget: int = DEFAULT_CHAR_BUDGET,
+    style_overlay: str | None = None,
 ) -> str:
     """Construct the extraction prompt.
 
@@ -92,9 +97,13 @@ def build_extraction_prompt(
     (observed on gemma4:e2b above ~35K characters with the instructions
     leading).
     """
+    from mahalath.style import render_style_block
+
     truncated = document_text[:char_budget]
     if len(document_text) > char_budget:
         truncated += "\n[...document truncated...]\n"
+
+    style_block = render_style_block(style_overlay)
 
     return (
         "Document:\n"
@@ -102,7 +111,8 @@ def build_extraction_prompt(
         f"{truncated}\n"
         ">>>\n"
         "\n"
-        "You are a domain-glossary extractor. Read the document ABOVE and "
+        + (style_block + "\n" if style_block else "")
+        + "You are a domain-glossary extractor. Read the document ABOVE and "
         "list the candidate terms that warrant their own glossary entry: "
         "technical nouns, named concepts, multi-word phrases of art, "
         "domain-specific jargon.\n"

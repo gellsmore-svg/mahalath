@@ -157,6 +157,7 @@ def extract_candidates_chunked(
     max_total_terms: int = DEFAULT_MAX_TOTAL_TERMS,
     model: str | None = None,
     require_term_in_document: bool = True,
+    style_overlay: str | None = None,
 ) -> list[CandidateTerm]:
     """Chunk a document, extract per chunk, aggregate.
 
@@ -183,6 +184,7 @@ def extract_candidates_chunked(
             chunk.text,
             max_terms=max_terms_per_chunk,
             char_budget=max(len(chunk.text), max_chunk_chars) + 1024,
+            style_overlay=style_overlay,
         )
         response = adapter.generate(prompt, want_json=True, model=model)
         try:

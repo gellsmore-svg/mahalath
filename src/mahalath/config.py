@@ -56,6 +56,12 @@ class RuntimeConfig(BaseModel):
     # required to agree (unanimously) on an action before it is eligible
     # for dispatch. Set to 1 to disable consensus (single-pass behavior).
     hierarchy_consensus_passes: int = 3
+    # Per-corpus style overlay: path (relative to project root) of a
+    # Markdown file injected into every agent prompt as
+    # `## Style guidance for this corpus`. Carries voice notes, domain
+    # vocabulary, "term X in this corpus means Y" overrides. None means
+    # no overlay; default behaviour matches Stage 1.
+    style_overlay_path: str | None = None
     ollama_executable: Path = Path(
         "/mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe"
     )

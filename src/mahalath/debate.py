@@ -78,6 +78,8 @@ def run_debate(
     source_document_id: str,
     adapter: Adapter,
     runtime: RuntimeConfig,
+    *,
+    style_overlay: str | None = None,
 ) -> DebateResult:
     """Run the PrecisionCritic/SynthesisExplorer loop on a single term."""
     decision_log_id = str(uuid4())
@@ -89,7 +91,9 @@ def run_debate(
 
     for iteration in range(1, runtime.max_iterations_per_term + 1):
         # PrecisionCritic
-        pc_prompt = _build_critic_prompt(term, context, history=messages)
+        pc_prompt = _build_critic_prompt(
+            term, context, history=messages, style_overlay=style_overlay
+        )
         pc_opinion, pc_exchange = _call_agent(
             adapter,
             role=PRECISION_CRITIC,
@@ -110,7 +114,9 @@ def run_debate(
         )
 
         # SynthesisExplorer
-        se_prompt = _build_explorer_prompt(term, context, history=messages)
+        se_prompt = _build_explorer_prompt(
+            term, context, history=messages, style_overlay=style_overlay
+        )
         se_opinion, se_exchange = _call_agent(
             adapter,
             role=SYNTHESIS_EXPLORER,
@@ -201,16 +207,24 @@ _OUTPUT_CONTRACT_EXPLORER = (
 
 
 def _build_critic_prompt(
-    term: str, context: str, history: list[DebateMessage]
+    term: str,
+    context: str,
+    history: list[DebateMessage],
+    *,
+    style_overlay: str | None = None,
 ) -> str:
-    parts = [
-        _CRITIC_PREAMBLE,
-        "",
+    from mahalath.style import render_style_block
+
+    parts = [_CRITIC_PREAMBLE, ""]
+    style_block = render_style_block(style_overlay)
+    if style_block:
+        parts.extend([style_block, ""])
+    parts.extend([
         f'Candidate term: "{term}"',
         "",
         "Context from the source document:",
         context.strip() or "(no context provided)",
-    ]
+    ])
     if history:
         parts.extend(["", "Debate so far:", _format_history(history)])
     parts.extend(["", _OUTPUT_CONTRACT_CRITIC])
@@ -218,11 +232,19 @@ def _build_critic_prompt(
 
 
 def _build_explorer_prompt(
-    term: str, context: str, history: list[DebateMessage]
+    term: str,
+    context: str,
+    history: list[DebateMessage],
+    *,
+    style_overlay: str | None = None,
 ) -> str:
-    parts = [
-        _EXPLORER_PREAMBLE,
-        "",
+    from mahalath.style import render_style_block
+
+    parts = [_EXPLORER_PREAMBLE, ""]
+    style_block = render_style_block(style_overlay)
+    if style_block:
+        parts.extend([style_block, ""])
+    parts.extend([
         f'Candidate term: "{term}"',
         "",
         "Context from the source document:",
@@ -232,7 +254,7 @@ def _build_explorer_prompt(
         _format_history(history),
         "",
         _OUTPUT_CONTRACT_EXPLORER,
-    ]
+    ])
     return "\n".join(parts)
 
 
