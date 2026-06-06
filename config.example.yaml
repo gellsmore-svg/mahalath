@@ -35,7 +35,7 @@ runtime:
 
   # Debate loop controls. Defaults per ADR-009 (iteration cap) and
   # ADR-010 (confidence threshold).
-  max_iterations_per_term: 25
+  max_iterations_per_term: 50
   confidence_threshold: 8.0
   confidence_scale_max: 10.0
 

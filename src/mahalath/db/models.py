@@ -1,0 +1,156 @@
+"""Pydantic models for the Mahalath MongoDB collections.
+
+These are validation contracts only; persistence happens in
+repositories.py. Schema versioning: every record carries
+`schema_version: int = 1`; migrations bump this.
+
+ID conventions:
+
+- `documents._id`         ObjectId (Mongo-generated); `document_id` is a
+                          stable UUID used as the cross-collection ref.
+- `ontology_entries._id`  set to the MPL label string at write time so
+                          references remain readable.
+- everything else uses Mongo-generated ObjectId on `_id` and carries its
+  own UUID-style stable id field (`decision_log_id`, etc.).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+SCHEMA_VERSION = 1
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class _MahalathModel(BaseModel):
+    """Base config: ignore Mongo's `_id` and other extras during validation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class DocumentRecord(_MahalathModel):
+    """An ingested source document."""
+
+    document_id: str = Field(default_factory=lambda: str(uuid4()))
+    source_path: str
+    archive_path: str
+    checksum_sha256: str
+    title: str | None = None
+    byte_size: int
+    char_count: int
+    ingested_at: datetime = Field(default_factory=_utcnow)
+    processed_at: datetime | None = None
+    schema_version: int = SCHEMA_VERSION
+
+
+class DefinitionVersion(_MahalathModel):
+    """One agent-authored definition of an ontology entry."""
+
+    text: str
+    language: str = "en"
+    model_used: str | None = None
+    decision_log_id: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class OntologyEntry(_MahalathModel):
+    """A flat-dictionary entry, keyed by MPL label.
+
+    `mpl_label` is also written into `_id` at insert time by the
+    repository. The hierarchical position lives in `ontology_tree`
+    edges; storing `parent_label` here too is a denormalisation for
+    fast reads.
+    """
+
+    mpl_label: str
+    canonical_term: str
+    aliases: list[str] = Field(default_factory=list)
+    parent_label: str | None = None
+    definitions: list[DefinitionVersion] = Field(default_factory=list)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: float
+    status: str = "accepted"
+    source_document_ids: list[str] = Field(default_factory=list)
+    decision_log_id: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION
+
+
+class OntologyTreeEdge(_MahalathModel):
+    """A parent/child edge between two MPL labels."""
+
+    parent_label: str
+    child_label: str
+    relation_type: str = "child_of"
+    created_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION
+
+
+class DebateMessage(_MahalathModel):
+    iteration: int
+    role: str  # precision_critic | synthesis_explorer | moderator
+    content: str
+    confidence: float | None = None
+    model: str | None = None
+
+
+class DecisionLogEntry(_MahalathModel):
+    """Per-term debate audit record.
+
+    `outcome` is one of: accepted | rejected | undecided | split.
+    `resulting_mpl_labels` lists the MPL labels created by this debate
+    (zero for rejected/undecided; one for plain accept; two for split).
+    """
+
+    decision_log_id: str = Field(default_factory=lambda: str(uuid4()))
+    term: str
+    source_document_id: str
+    messages: list[DebateMessage] = Field(default_factory=list)
+    final_confidence: float | None = None
+    iterations_used: int = 0
+    outcome: str = "undecided"
+    resulting_mpl_labels: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION
+
+
+class AgentExchange(_MahalathModel):
+    """One adapter call: prompt + response + confidence."""
+
+    decision_log_id: str
+    iteration: int
+    role: str
+    model: str
+    prompt: str
+    response: str
+    confidence: float | None = None
+    started_at: datetime = Field(default_factory=_utcnow)
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    schema_version: int = SCHEMA_VERSION
+
+
+class UndecidedItem(_MahalathModel):
+    """A term routed to the undecided queue.
+
+    `reason` is one of: below_threshold | iteration_cap | conflict |
+    moderator_block.
+    """
+
+    decision_log_id: str
+    term: str
+    source_document_id: str
+    reason: str
+    last_confidence: float | None = None
+    escalation_level: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION

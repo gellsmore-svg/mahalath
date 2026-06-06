@@ -22,7 +22,7 @@ def test_load_config_returns_defaults_when_no_yaml_present(
     config = load_config()
     assert isinstance(config, AppConfig)
     assert config.mongo.database == "mahalath_dev"
-    assert config.runtime.max_iterations_per_term == 25
+    assert config.runtime.max_iterations_per_term == 50
     assert config.runtime.confidence_threshold == 8.0
     assert config.runtime.confidence_scale_max == 10.0
 
