@@ -152,12 +152,17 @@ class UndecidedItem(_MahalathModel):
 
     `reason` is one of: below_threshold | iteration_cap | conflict |
     moderator_block.
+
+    `context` holds the source-document snippet that was the input to
+    the original debate, so the REM re-review job can re-run debate
+    with the same input without re-extracting from the document.
     """
 
     decision_log_id: str
     term: str
     source_document_id: str
     reason: str
+    context: str | None = None
     last_confidence: float | None = None
     escalation_level: int = 0
     created_at: datetime = Field(default_factory=_utcnow)

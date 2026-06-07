@@ -68,6 +68,7 @@ class DebateResult:
     final_definition: str | None
     final_confidence: float | None
     iterations_used: int
+    context: str = ""
     messages: list[DebateMessage] = field(default_factory=list)
     exchanges: list[AgentExchange] = field(default_factory=list)
 
@@ -151,6 +152,7 @@ def run_debate(
                 final_definition=last_definition,
                 final_confidence=min_confidence,
                 iterations_used=iteration,
+                context=context,
                 messages=messages,
                 exchanges=exchanges,
             )
@@ -164,6 +166,7 @@ def run_debate(
         final_definition=last_definition,
         final_confidence=last_min_confidence,
         iterations_used=runtime.max_iterations_per_term,
+        context=context,
         messages=messages,
         exchanges=exchanges,
     )

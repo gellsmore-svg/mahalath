@@ -123,28 +123,32 @@ def _default_process_input(config: AppConfig) -> None:
 
 
 def _default_rem_job(config: AppConfig) -> None:
-    """First-slice REM job: count the undecided queue and log.
-
-    Stage 2.13 candidate: re-run debate on the pending items, with the
-    audit chain pointing back to the original decision. This stub
-    opens the seam without committing to a particular re-review
-    policy (raise threshold? prefer different model? operator-flagged
-    only?).
+    """REM job: re-debate eligible undecided items via `rem_review`.
 
     Deliberately does NOT call `db.close_all()`: a long-running
-    scheduler owns the pool lifecycle, and individual jobs closing
-    the shared client breaks any in-flight work in other jobs.
+    scheduler owns the connection pool lifecycle, and individual jobs
+    closing the shared client would break in-flight work in other jobs.
     """
+    from mahalath.adapters import make_adapter
     from mahalath.db import get_database
-    from mahalath.db.repositories import UndecidedQueueRepository
+    from mahalath.rem import rem_review
 
     log.info("scheduler: REM job starting")
     db = get_database(config)
-    pending = UndecidedQueueRepository(db).list_pending()
-    log.info("scheduler: REM — %d pending undecided items", len(pending))
-    for item in pending[:10]:
-        log.info(
-            "scheduler: REM —   %s (reason=%s, last_conf=%s)",
-            item.term, item.reason, item.last_confidence,
-        )
-    log.info("scheduler: REM job completed")
+    adapter = make_adapter(config.runtime.model_adapter, config)
+    result = rem_review(config, db, adapter)
+    log.info(
+        "scheduler: REM completed — pending=%d reviewed=%d accepted=%d "
+        "still_undecided=%d skipped=%d errored=%d",
+        result.items_pending_at_start,
+        result.items_reviewed,
+        result.items_accepted,
+        result.items_still_undecided,
+        result.items_skipped_max_escalation,
+        result.items_errored,
+    )
+    if result.accepted_labels:
+        log.info("scheduler: REM promoted: %s", result.accepted_labels)
+    if result.errors:
+        for err in result.errors[:5]:
+            log.warning("scheduler: REM error: %s", err)

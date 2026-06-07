@@ -198,10 +198,34 @@ def _route_to_undecided(
         term=result.term,
         source_document_id=result.source_document_id,
         reason=reason,
+        context=result.context or None,
         last_confidence=result.final_confidence,
     )
     UndecidedQueueRepository(db).insert(item)
     return item
+
+
+def persist_decision_audit(
+    result: DebateResult,
+    db: Database,
+    *,
+    outcome: str,
+    resulting_labels: list[str] | None = None,
+) -> None:
+    """Write decision_log + agent_exchanges only.
+
+    Used by REM re-review when re-debate produces another undecided
+    outcome: we want the new attempt's audit trail to be queryable
+    (per-iteration prompts/responses, final confidence, message
+    history) but we do NOT want to create a duplicate
+    UndecidedItem — the existing queue row is updated in place
+    instead. Also useful for any future job that wants to record a
+    debate run without changing ontology state.
+    """
+    DecisionLogRepository(db).insert(
+        _decision_log_entry(result, outcome, resulting_labels or [])
+    )
+    _persist_exchanges(result, AgentExchangeRepository(db))
 
 
 def _model_used_in(result: DebateResult) -> str | None:
