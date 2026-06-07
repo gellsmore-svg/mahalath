@@ -37,7 +37,14 @@ class _MahalathModel(BaseModel):
 
 
 class DocumentRecord(_MahalathModel):
-    """An ingested source document."""
+    """An ingested source document.
+
+    `style_overlay_path` (optional) overrides
+    `runtime.style_overlay_path` for this specific document, so a
+    single Mahalath database can host multiple corpora in parallel
+    with their own author-voice notes. None means "fall back to the
+    runtime-level overlay (if any)".
+    """
 
     document_id: str = Field(default_factory=lambda: str(uuid4()))
     source_path: str
@@ -48,6 +55,7 @@ class DocumentRecord(_MahalathModel):
     char_count: int
     ingested_at: datetime = Field(default_factory=_utcnow)
     processed_at: datetime | None = None
+    style_overlay_path: str | None = None
     schema_version: int = SCHEMA_VERSION
 
 

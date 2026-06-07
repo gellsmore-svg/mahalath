@@ -58,6 +58,15 @@ def main(argv: list[str] | None = None) -> int:
         "ingest-one", help="(Stage 1) Ingest a single document by path."
     )
     ingest_one.add_argument("path")
+    ingest_one.add_argument(
+        "--style-overlay",
+        default=None,
+        help=(
+            "Per-document style overlay path. Stored on the "
+            "DocumentRecord and used by the pipeline in preference to "
+            "the runtime-level style_overlay_path."
+        ),
+    )
 
     debate_one = subcommands.add_parser(
         "debate-one", help="(Stage 1) Run one debate cycle on a single candidate term."
@@ -176,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         return _db_ping(config)
 
     if args.command == "ingest-one":
-        return _ingest_one(config, Path(args.path))
+        return _ingest_one(
+            config, Path(args.path), style_overlay_path=args.style_overlay
+        )
 
     if args.command == "process-document":
         return _process_document(
@@ -236,7 +247,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _ingest_one(config: AppConfig, source_path: Path) -> int:
+def _ingest_one(
+    config: AppConfig,
+    source_path: Path,
+    *,
+    style_overlay_path: str | None = None,
+) -> int:
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.ingestion import IngestionError, ingest_one
 
@@ -248,7 +264,9 @@ def _ingest_one(config: AppConfig, source_path: Path) -> int:
         return 4
 
     try:
-        result = ingest_one(source_path, config, db)
+        result = ingest_one(
+            source_path, config, db, style_overlay_path=style_overlay_path
+        )
     except IngestionError as exc:
         print(f"mahalath: ingestion failed: {exc}", file=sys.stderr)
         return 5
@@ -264,6 +282,7 @@ def _ingest_one(config: AppConfig, source_path: Path) -> int:
         "archive_path": result.document.archive_path,
         "byte_size": result.document.byte_size,
         "char_count": result.document.char_count,
+        "style_overlay_path": result.document.style_overlay_path,
         "activity_log_path": (
             str(result.activity_log_path) if result.activity_log_path else None
         ),
@@ -283,7 +302,6 @@ def _process_document(
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.db.repositories import DocumentRepository
-    from mahalath.style import load_style_overlay
 
     try:
         db = get_database(config)
@@ -299,7 +317,8 @@ def _process_document(
             return 6
 
         adapter = make_adapter(config.runtime.model_adapter, config)
-        style_overlay = load_style_overlay(config)
+        from mahalath.style import resolve_style_overlay
+        style_overlay = resolve_style_overlay(document, config)
 
         result = _run_pipeline_on_document(
             document, db, adapter, config,
@@ -334,7 +353,7 @@ def _process_input(
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.ingestion import IngestionError, ingest_one
-    from mahalath.style import load_style_overlay
+    from mahalath.style import resolve_style_overlay
 
     try:
         db = get_database(config)
@@ -365,7 +384,6 @@ def _process_input(
             return 0
 
         adapter = make_adapter(config.runtime.model_adapter, config)
-        style_overlay = load_style_overlay(config)
 
         results: list[dict[str, Any]] = []
         for file_path in files:
@@ -390,12 +408,13 @@ def _process_input(
                 results.append(entry)
                 continue
 
+            doc_overlay = resolve_style_overlay(ingestion.document, config)
             pipeline_result = _run_pipeline_on_document(
                 ingestion.document, db, adapter, config,
                 max_terms=max_terms_per_doc,
                 skip_hierarchy_review=skip_hierarchy_review,
                 consensus_passes_override=consensus_passes_override,
-                style_overlay=style_overlay,
+                style_overlay=doc_overlay,
             )
             # Avoid double-keying document_id / title.
             for k, v in pipeline_result.items():

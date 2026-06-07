@@ -42,8 +42,41 @@ STYLE_OVERLAY_FOOTER = "(end of style guidance — task instructions follow)"
 def load_style_overlay(
     config: AppConfig, *, project_root: Path | None = None
 ) -> str | None:
-    """Load the configured style overlay file if any, else return None."""
-    overlay_path = config.runtime.style_overlay_path
+    """Load the runtime-level style overlay file if any, else return None."""
+    return _load_overlay_file(
+        config.runtime.style_overlay_path, project_root=project_root
+    )
+
+
+def resolve_style_overlay(
+    document, config: AppConfig, *, project_root: Path | None = None
+) -> str | None:
+    """Pick the most-specific style overlay for this document.
+
+    Precedence:
+      1. document.style_overlay_path (per-document override)
+      2. runtime.style_overlay_path (database-wide default)
+      3. None (Stage 1 behaviour — no overlay)
+
+    `document` may be any object with a `style_overlay_path` attribute
+    (DocumentRecord or a duck-typed test stand-in). Pass None to skip
+    the document-level lookup entirely.
+    """
+    doc_overlay_path = (
+        getattr(document, "style_overlay_path", None) if document else None
+    )
+    if doc_overlay_path:
+        loaded = _load_overlay_file(doc_overlay_path, project_root=project_root)
+        if loaded is not None:
+            return loaded
+        # Document-level override is set but file is missing — fall back to
+        # runtime rather than silently dropping all corpus voice notes.
+    return load_style_overlay(config, project_root=project_root)
+
+
+def _load_overlay_file(
+    overlay_path: str | None, *, project_root: Path | None = None
+) -> str | None:
     if not overlay_path:
         return None
     root = project_root or Path.cwd()

@@ -100,6 +100,30 @@ def test_ingest_one_raises_when_source_missing(
         ingest_one(tmp_path / "nope.md", config, mongo_db, project_root=tmp_path)
 
 
+def test_ingest_one_stores_style_overlay_path(
+    tmp_path: Path, mongo_db, mongo_config: AppConfig
+) -> None:
+    config = _config_for(tmp_path, mongo_config.mongo.database)
+    src = tmp_path / "input" / "doc.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Doc\n\nBody.\n", encoding="utf-8")
+
+    result = ingest_one(
+        src, config, mongo_db,
+        project_root=tmp_path,
+        style_overlay_path="docs/voice.md",
+    )
+    assert result.document.style_overlay_path == "docs/voice.md"
+
+    # Round-trip via the DB confirms the field is persisted.
+    from mahalath.db.repositories import DocumentRepository
+    fetched = DocumentRepository(mongo_db).find_by_document_id(
+        result.document.document_id
+    )
+    assert fetched is not None
+    assert fetched.style_overlay_path == "docs/voice.md"
+
+
 def test_ingest_one_disambiguates_archive_name_collision(
     tmp_path: Path, mongo_db, mongo_config: AppConfig
 ) -> None:
