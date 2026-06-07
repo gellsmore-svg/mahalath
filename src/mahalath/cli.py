@@ -156,6 +156,28 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
+    run_parser = subcommands.add_parser(
+        "run",
+        help="Run the polling scheduler: process-input on an interval, "
+        "REM job on cron. Blocks in the foreground until Ctrl-C.",
+    )
+    run_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Fire both jobs once and exit (cron-style external scheduling).",
+    )
+    run_parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=None,
+        help="Override ingestion.poll_interval_seconds for this run.",
+    )
+    run_parser.add_argument(
+        "--rem-cron",
+        default=None,
+        help="Override rem.cron for this run.",
+    )
+
     export_glossary_parser = subcommands.add_parser(
         "export-glossary",
         help="Export the ontology as a Markdown or JSON glossary.",
@@ -226,6 +248,20 @@ def main(argv: list[str] | None = None) -> int:
         return _export_glossary(
             config, fmt=args.format,
             out_path=Path(args.out) if args.out else None,
+        )
+
+    if args.command == "run":
+        from mahalath.scheduler import run_scheduler
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
+        return run_scheduler(
+            config,
+            once=args.once,
+            poll_seconds=args.poll_seconds,
+            rem_cron=args.rem_cron,
         )
 
     if args.command == "process-input":
