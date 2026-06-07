@@ -156,6 +156,25 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
+    frontier_parser = subcommands.add_parser(
+        "frontier-review",
+        help="Adjudicate pending_review proposals via a frontier model. "
+        "Requires ANTHROPIC_API_KEY env var when using claude_api.",
+    )
+    frontier_parser.add_argument(
+        "--max-items", type=int, default=25,
+        help="Cap on items adjudicated this run (default 25).",
+    )
+    frontier_parser.add_argument(
+        "--adapter", default="claude_api",
+        help="Adapter name (default claude_api). Any name make_adapter "
+        "recognises is allowed.",
+    )
+    frontier_parser.add_argument(
+        "--model", default=None,
+        help="Override the adapter's default model.",
+    )
+
     serve_parser = subcommands.add_parser(
         "serve",
         help="Run the FastAPI web UI (read-only ontology browser + "
@@ -274,6 +293,14 @@ def main(argv: list[str] | None = None) -> int:
             once=args.once,
             poll_seconds=args.poll_seconds,
             rem_cron=args.rem_cron,
+        )
+
+    if args.command == "frontier-review":
+        return _frontier_review(
+            config,
+            max_items=args.max_items,
+            adapter_name=args.adapter,
+            model_override=args.model,
         )
 
     if args.command == "serve":
@@ -901,6 +928,57 @@ def _proposal_summary(p) -> dict[str, Any]:
         "operator_note": p.operator_note,
         "created_at": p.created_at,
     }
+
+
+def _frontier_review(
+    config: AppConfig,
+    *,
+    max_items: int,
+    adapter_name: str,
+    model_override: str | None,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.frontier import frontier_review
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    try:
+        adapter = make_adapter(adapter_name, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+        result = frontier_review(config, db, adapter, max_items=max_items)
+    finally:
+        close_all()
+
+    payload = {
+        "ok": True,
+        "adapter": adapter_name,
+        "model": getattr(adapter, "default_model", None),
+        "items_in_queue_at_start": result.items_in_queue_at_start,
+        "items_reviewed": result.items_reviewed,
+        "items_accepted": result.items_accepted,
+        "items_rejected": result.items_rejected,
+        "items_escalated": result.items_escalated,
+        "items_errored": result.items_errored,
+        "verdicts": result.verdicts,
+        "errors": result.errors,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _export_glossary(

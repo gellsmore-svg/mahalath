@@ -26,3 +26,7 @@ __all__ = [
     "OllamaCliAdapter",
     "make_adapter",
 ]
+
+# ClaudeApiAdapter is importable but not in __all__ because it has a hard
+# httpx dependency at module-import time; callers that want it must
+# `from mahalath.adapters.claude_api import ClaudeApiAdapter` explicitly.

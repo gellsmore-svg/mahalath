@@ -17,6 +17,9 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
             default_model=config.runtime.model,
             default_timeout_seconds=config.runtime.ollama_timeout_seconds,
         )
+    if name == "claude_api":
+        from mahalath.adapters.claude_api import ClaudeApiAdapter
+        return ClaudeApiAdapter()
     raise AdapterError(
-        f"Unknown adapter {name!r}. Supported: mock, ollama_cli."
+        f"Unknown adapter {name!r}. Supported: mock, ollama_cli, claude_api."
     )
