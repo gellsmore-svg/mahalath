@@ -583,6 +583,14 @@ def _run_pipeline_on_document(
         config, document.document_id, document.title, candidates, debated
     )
 
+    glossary_paths: dict[str, str] | None = None
+    if any(d.get("outcome") == "accepted" for d in debated):
+        from mahalath.glossary import refresh_glossary
+        exports = refresh_glossary(config, db)
+        glossary_paths = {
+            fmt: str(exports[fmt].written_to) for fmt in exports
+        }
+
     return {
         "ok": True,
         "document_id": document.document_id,
@@ -591,6 +599,7 @@ def _run_pipeline_on_document(
         "debated": debated,
         "remaining_candidates": [c.term for c in candidates[max_terms:]],
         "activity_log_path": str(log_path),
+        "glossary_refreshed": glossary_paths,
     }
 
 

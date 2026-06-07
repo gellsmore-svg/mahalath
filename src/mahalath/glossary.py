@@ -36,6 +36,10 @@ from mahalath.db.repositories import (
 )
 
 
+DEFAULT_GLOSSARY_BASENAME = "glossary"
+DEFAULT_AUTO_FORMATS: tuple[str, ...] = ("md", "json")
+
+
 @dataclass(frozen=True)
 class ExportResult:
     format: str          # "md" or "json"
@@ -67,6 +71,49 @@ def export_markdown(
         output=body,
         written_to=out_path,
     )
+
+
+def refresh_glossary(
+    config,
+    db: Database,
+    *,
+    formats: tuple[str, ...] = DEFAULT_AUTO_FORMATS,
+    basename: str = DEFAULT_GLOSSARY_BASENAME,
+    project_root: Path | None = None,
+) -> dict[str, ExportResult]:
+    """Write glossary artifacts to `paths.ontology/glossary.{md,json}`.
+
+    Idempotent: same ontology produces the same bytes. Called from
+    process-input, process-document, and the scheduler's REM job
+    after operations that may have changed the ontology. The
+    operator can `git diff ontology/` after every overnight run.
+
+    `config` may be any object with `.paths.ontology` (a Path or str)
+    and `.mongo.database` (str) — typed as AppConfig in practice.
+    """
+    root = project_root or Path.cwd()
+    out_dir = Path(config.paths.ontology)
+    if not out_dir.is_absolute():
+        out_dir = root / out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    results: dict[str, ExportResult] = {}
+    for fmt in formats:
+        if fmt == "md":
+            results["md"] = export_markdown(
+                db,
+                out_path=out_dir / f"{basename}.md",
+                database_name=config.mongo.database,
+            )
+        elif fmt == "json":
+            results["json"] = export_json(
+                db,
+                out_path=out_dir / f"{basename}.json",
+                database_name=config.mongo.database,
+            )
+        else:
+            raise ValueError(f"unknown glossary format: {fmt!r}")
+    return results
 
 
 def export_json(

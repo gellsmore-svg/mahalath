@@ -152,3 +152,11 @@ def _default_rem_job(config: AppConfig) -> None:
     if result.errors:
         for err in result.errors[:5]:
             log.warning("scheduler: REM error: %s", err)
+
+    if result.items_accepted > 0:
+        from mahalath.glossary import refresh_glossary
+        exports = refresh_glossary(config, db)
+        log.info(
+            "scheduler: REM refreshed glossary (md=%d entries, json=%d entries)",
+            exports["md"].entry_count, exports["json"].entry_count,
+        )
