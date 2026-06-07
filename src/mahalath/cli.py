@@ -156,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
+    serve_parser = subcommands.add_parser(
+        "serve",
+        help="Run the FastAPI web UI (read-only ontology browser + "
+        "proposal accept/reject). Requires the optional [web] extra.",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument(
+        "--reload", action="store_true",
+        help="Enable auto-reload (development only).",
+    )
+
     run_parser = subcommands.add_parser(
         "run",
         help="Run the polling scheduler: process-input on an interval, "
@@ -263,6 +275,28 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             rem_cron=args.rem_cron,
         )
+
+    if args.command == "serve":
+        try:
+            import uvicorn
+        except ImportError:
+            print(
+                "mahalath: serve requires the optional [web] extras; "
+                "install with: pip install -e \".[web]\"",
+                file=sys.stderr,
+            )
+            return 11
+        from mahalath.web.app import create_app
+        import logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        )
+        app = create_app(config)
+        uvicorn.run(
+            app, host=args.host, port=args.port, reload=args.reload, log_level="info",
+        )
+        return 0
 
     if args.command == "process-input":
         return _process_input(
