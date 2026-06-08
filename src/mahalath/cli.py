@@ -156,6 +156,16 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
+    subcommands.add_parser(
+        "list-stale",
+        help="List ontology entries flagged as stale (upstream changed).",
+    )
+    subcommands.add_parser(
+        "backfill-references",
+        help="One-shot migration: recompute references_labels for every "
+        "ontology entry. Use on databases that pre-date S2.17.",
+    )
+
     frontier_parser = subcommands.add_parser(
         "frontier-review",
         help="Adjudicate pending_review proposals via a frontier model. "
@@ -294,6 +304,12 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             rem_cron=args.rem_cron,
         )
+
+    if args.command == "list-stale":
+        return _list_stale(config)
+
+    if args.command == "backfill-references":
+        return _backfill_references(config)
 
     if args.command == "frontier-review":
         return _frontier_review(
@@ -928,6 +944,58 @@ def _proposal_summary(p) -> dict[str, Any]:
         "operator_note": p.operator_note,
         "created_at": p.created_at,
     }
+
+
+def _list_stale(config: AppConfig) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.staleness import list_stale
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        stale = list_stale(db)
+        payload = {
+            "count": len(stale),
+            "entries": [
+                {
+                    "mpl_label": e.mpl_label,
+                    "canonical_term": e.canonical_term,
+                    "references_labels": e.references_labels,
+                    "stale_reasons": [
+                        {**r, "changed_at": str(r.get("changed_at"))}
+                        for r in e.stale_reasons
+                    ],
+                }
+                for e in stale
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _backfill_references(config: AppConfig) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.staleness import backfill_references
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        result = backfill_references(db)
+        print(json.dumps({"ok": True, **result}, indent=2))
+        return 0
+    finally:
+        close_all()
 
 
 def _frontier_review(

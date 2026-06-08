@@ -180,6 +180,16 @@ def rollback_proposal(
         )
 
     rollback_result = _rollback(proposal, db)
+    # A rollback is a structural undo; dependents may need to be
+    # re-evaluated against the restored state.
+    affected_label = proposal.payload.get("child_label") or proposal.payload.get("label")
+    if affected_label:
+        from mahalath.staleness import mark_dependents_stale
+        mark_dependents_stale(
+            db, affected_label,
+            change_type=f"rollback_{proposal.action_type}",
+            note=note,
+        )
     now = _utcnow()
 
     # Preserve the original application_result alongside the rollback

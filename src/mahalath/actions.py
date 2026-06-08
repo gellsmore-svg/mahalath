@@ -437,6 +437,19 @@ def _apply_parent(action: ProposeParent, db: Database) -> dict[str, Any]:
             }
         },
     )
+    # A parent change is a structural change; entries that referenced
+    # the child may need to re-evaluate against its new ancestor chain.
+    if reparenting:
+        from mahalath.staleness import mark_dependents_stale
+        mark_dependents_stale(
+            db, action.child_label,
+            change_type="reparented",
+            note=(
+                f"parent changed from {previous_parent_label} to "
+                f"{action.parent_label}"
+            ),
+        )
+
     return {
         "tree_edge_added": True,
         "parent_label_updated": True,

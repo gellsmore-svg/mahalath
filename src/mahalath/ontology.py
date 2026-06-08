@@ -151,6 +151,11 @@ def _write_accepted(
             OntologyTreeEdge(parent_label=parent_label, child_label=mpl_label)
         )
 
+    # Populate references_labels from the entry's definitions, so the
+    # reverse-index is built incrementally as entries land.
+    from mahalath.staleness import update_references
+    update_references(db, mpl_label)
+
     return entry, mpl_label
 
 

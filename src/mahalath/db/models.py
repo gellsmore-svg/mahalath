@@ -76,6 +76,12 @@ class OntologyEntry(_MahalathModel):
     repository. The hierarchical position lives in `ontology_tree`
     edges; storing `parent_label` here too is a denormalisation for
     fast reads.
+
+    `references_labels` lists the other MPL labels mentioned in any
+    of this entry's definitions (extracted on write). `is_stale` is
+    set by `mark_dependents_stale` when an upstream entry changes;
+    each change appends to `stale_reasons` so the audit chain shows
+    why this entry's definition or hierarchy may no longer be valid.
     """
 
     mpl_label: str
@@ -88,6 +94,9 @@ class OntologyEntry(_MahalathModel):
     status: str = "accepted"
     source_document_ids: list[str] = Field(default_factory=list)
     decision_log_id: str | None = None
+    references_labels: list[str] = Field(default_factory=list)
+    is_stale: bool = False
+    stale_reasons: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
     schema_version: int = SCHEMA_VERSION

@@ -26,6 +26,8 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.ontology_entries.create_index("parent_label"),
         db.ontology_entries.create_index("canonical_term"),
         db.ontology_entries.create_index("status"),
+        db.ontology_entries.create_index("references_labels"),  # for reverse lookups
+        db.ontology_entries.create_index("is_stale"),
         db.ontology_entries.create_index([("updated_at", DESCENDING)]),
     ]
 
