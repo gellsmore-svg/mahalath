@@ -62,6 +62,11 @@ class RuntimeConfig(BaseModel):
     # vocabulary, "term X in this corpus means Y" overrides. None means
     # no overlay; default behaviour matches Stage 1.
     style_overlay_path: str | None = None
+    # Adapter used by the /api/chat endpoint. Defaults to claude_api
+    # because chat is the frontier-quality surface for the operator;
+    # override to "ollama_cli" for fully local operation or to "mock"
+    # for tests.
+    chat_adapter: str = "claude_api"
     ollama_executable: Path = Path(
         "/mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe"
     )

@@ -21,8 +21,8 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Body, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from mahalath.config import AppConfig, load_config
 from mahalath.db import ensure_indexes, get_database
@@ -48,6 +48,12 @@ _CSS = """
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
        max-width: 1100px; margin: 1.5em auto; padding: 0 1em; line-height: 1.5;
        color: #222; background: #fafafa; }
+.chatform textarea { width: 100%; padding: 0.6em; font-size: 1em; border: 1px solid #bbb; border-radius: 4px; box-sizing: border-box; }
+.chatform button { margin-top: 0.6em; }
+.chatresult { margin-top: 1.5em; }
+.chatanswer { background: white; padding: 1em 1.3em; border: 1px solid #ddd; border-radius: 6px; line-height: 1.5; }
+.chatmeta { font-size: 0.85em; color: #666; margin-top: 0.5em; }
+.chatmeta a { color: #0a58ca; }
 header nav { margin-bottom: 1.5em; padding-bottom: 0.7em; border-bottom: 1px solid #ddd; }
 header nav a { margin-right: 1em; color: #0a58ca; text-decoration: none; font-weight: 500; }
 header nav a:hover { text-decoration: underline; }
@@ -106,6 +112,7 @@ def _base(title: str, body: str, database: str) -> str:
     <a href="/proposals">All proposals</a>
     <a href="/undecided">Undecided</a>
     <a href="/documents">Documents</a>
+    <a href="/chat">Chat</a>
     <span class="muted" style="float:right">{escape(database)}</span>
   </nav>
 </header>
@@ -436,6 +443,98 @@ def _register_routes(app: FastAPI) -> None:
 </table>
 """
         return _base("Undecided", body, config.mongo.database)
+
+    @app.get("/chat", response_class=HTMLResponse)
+    def chat_page(request: Request) -> str:
+        config: AppConfig = request.app.state.config
+        body = """
+<h1>Chat</h1>
+<p class="muted">Ask about the ontology. Answers are grounded in the current entries, references, and audit state. The chat is read-only; to act on what surfaces here, use the proposals page.</p>
+<form id="chat-form" class="chatform">
+  <textarea name="question" rows="3" placeholder="What does the ontology say about substrate? How are MPL-001 and MPL-004 related?"></textarea>
+  <button type="submit">Ask</button>
+</form>
+<div id="answer" class="chatresult"></div>
+<script>
+document.getElementById('chat-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const q = document.querySelector('textarea[name=question]').value;
+  if (!q.trim()) return;
+  document.getElementById('answer').innerHTML = '<p class="muted">thinking…</p>';
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q})
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      document.getElementById('answer').innerHTML = '<p style="color:#a00">' + (data.detail || 'error') + '</p>';
+      return;
+    }
+    const cited = (data.cited_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
+    const ctx = (data.context_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
+    document.getElementById('answer').innerHTML =
+      '<h2>Answer</h2>' +
+      '<div class="chatanswer">' + data.answer.replace(/\\n\\n/g, '</p><p>').replace(/\\n/g, '<br>') + '</div>' +
+      '<p class="chatmeta">Cited: ' + (cited || '<em>none</em>') + '</p>' +
+      '<p class="chatmeta">Context entries: ' + (ctx || '<em>none</em>') + '</p>' +
+      '<p class="chatmeta"><em>' + data.duration_ms + 'ms · ' + data.model_used + '</em></p>';
+  } catch (err) {
+    document.getElementById('answer').innerHTML = '<p style="color:#a00">network error: ' + err + '</p>';
+  }
+});
+</script>
+"""
+        return _base("Chat", body, config.mongo.database)
+
+    @app.post("/api/chat")
+    def chat_api(
+        request: Request, payload: dict = Body(default_factory=dict)
+    ) -> JSONResponse:
+        from mahalath.adapters import make_adapter
+        from mahalath.adapters.base import AdapterError as _AdapterError
+        from mahalath.chat import answer_question
+        from mahalath.style import load_style_overlay
+
+        config: AppConfig = request.app.state.config
+        question = str(payload.get("question", "")).strip()
+        if not question:
+            raise HTTPException(400, "question is required")
+        focus_label = payload.get("focus_label")
+        max_ctx = int(payload.get("max_context_entries", 10))
+
+        db = get_database(config)
+
+        try:
+            adapter = make_adapter(config.runtime.chat_adapter, config)
+        except _AdapterError as exc:
+            raise HTTPException(
+                503,
+                f"chat adapter unavailable: {exc} — set chat_adapter in config "
+                "or ANTHROPIC_API_KEY for the default claude_api.",
+            )
+
+        overlay = load_style_overlay(config)
+
+        try:
+            response = answer_question(
+                question, db, adapter,
+                max_context_entries=max_ctx,
+                focus_label=focus_label,
+                style_overlay=overlay,
+            )
+        except _AdapterError as exc:
+            raise HTTPException(502, f"adapter error: {exc}")
+
+        return JSONResponse({
+            "question": response.question,
+            "answer": response.answer,
+            "context_labels": response.context_labels,
+            "cited_labels": response.cited_labels,
+            "model_used": response.model_used,
+            "duration_ms": response.duration_ms,
+        })
 
     @app.get("/documents", response_class=HTMLResponse)
     def documents_list(request: Request) -> str:
