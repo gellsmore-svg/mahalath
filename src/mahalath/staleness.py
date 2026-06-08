@@ -538,6 +538,275 @@ def audit_stale_entry(
     return parse_audit_verdict(response.text)
 
 
+class RedefineError(Exception):
+    """Raised when a redefine response cannot be parsed."""
+
+
+@dataclass(frozen=True)
+class RedefineVerdict:
+    new_definition: str
+    confidence: float
+    rationale: str
+
+
+@dataclass
+class RedefineResult:
+    items_at_start: int = 0
+    items_redefined: int = 0
+    items_skipped: int = 0
+    items_errored: int = 0
+    verdicts: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def stale_entries_with_inconsistent_audit(
+    db: Database, *, limit: int = 50
+) -> list[OntologyEntry]:
+    """Return stale entries that an audit has called inconsistent (or unclear).
+
+    Filters list_stale to those whose stale_reasons contains at least
+    one `audit_inconsistent` or `audit_unclear` entry — i.e., the audit
+    pass has already looked at them and decided they need attention,
+    not just structurally-flagged-then-untouched items.
+    """
+    cursor = (
+        db.ontology_entries.find({
+            "is_stale": True,
+            "stale_reasons.change_type": {
+                "$in": ["audit_inconsistent", "audit_unclear"]
+            },
+        })
+        .sort("updated_at", 1)  # oldest stale first
+        .limit(limit)
+    )
+    return [OntologyEntry.model_validate(doc) for doc in cursor]
+
+
+def build_redefine_prompt(
+    entry: OntologyEntry,
+    db: Database,
+    style_overlay: str | None,
+    *,
+    max_referenced: int = 10,
+) -> str:
+    """Prompt the adapter to produce a new definition consistent with current upstream."""
+    entries_repo = OntologyEntryRepository(db)
+
+    parts: list[str] = []
+    parts.append("You are an ontology definition editor.")
+    parts.append("")
+    parts.append(
+        "The entry below was previously accepted into the ontology, but "
+        "recent changes to its referenced entries have rendered its "
+        "definition out-of-date. Produce a single new definition that "
+        "is consistent with the CURRENT state of the upstream entries."
+    )
+    parts.append("")
+    parts.append("STALE ENTRY")
+    parts.append(f"  Label: {entry.mpl_label}")
+    parts.append(f"  Term:  {entry.canonical_term!r}")
+    parts.append(f"  Current parent: {entry.parent_label or '(top-level)'}")
+    if entry.definitions:
+        parts.append("  Current definitions (most recent last):")
+        for i, d in enumerate(entry.definitions, 1):
+            parts.append(
+                f"    {i}. (from {d.model_used or '?'}) {d.text}"
+            )
+    parts.append("")
+
+    parts.append("REFERENCED UPSTREAMS (current state)")
+    for ref_label in entry.references_labels[:max_referenced]:
+        ref = entries_repo.get(ref_label)
+        if ref is None:
+            parts.append(f"  {ref_label}: (no longer exists)")
+            continue
+        ref_parent = ref.parent_label or "(top-level)"
+        parts.append(
+            f"  {ref_label} {ref.canonical_term!r}  parent: {ref_parent}"
+        )
+        if ref.definitions:
+            latest = ref.definitions[-1]
+            parts.append(
+                f"    Current def: {latest.text}"
+            )
+    parts.append("")
+
+    audit_reasons = [
+        r for r in entry.stale_reasons
+        if r.get("change_type", "").startswith("audit_")
+    ]
+    if audit_reasons:
+        parts.append("CONSISTENCY ISSUES IDENTIFIED BY AUDIT")
+        for r in audit_reasons[-3:]:
+            note = r.get("note", "")
+            parts.append(f"  - {note}")
+        parts.append("")
+
+    if style_overlay:
+        block = render_style_block(style_overlay)
+        if block:
+            parts.append(block)
+            parts.append("")
+
+    parts.append("YOUR TASK")
+    parts.append(
+        "Produce a single new definition (one or two sentences) for the "
+        "entry that accurately captures its meaning given the CURRENT "
+        "upstream state. Do NOT propose a new label, parent, or canonical "
+        "term — only the definition text."
+    )
+    parts.append("")
+    parts.append(
+        'Output ONLY a JSON object: '
+        '{"new_definition": "<text>", '
+        '"confidence": <number 0.0-10.0>, '
+        '"rationale": "<one sentence on what you changed and why>"}'
+    )
+
+    return "\n".join(parts)
+
+
+def parse_redefine_verdict(response_text: str) -> RedefineVerdict:
+    text = response_text.strip()
+    if not text:
+        raise RedefineError("redefine adapter returned empty response")
+
+    if text.startswith("```"):
+        parts = text.split("```", 2)
+        if len(parts) >= 2:
+            inner = parts[1]
+            if inner.startswith("json"):
+                inner = inner[4:].lstrip()
+            text = inner
+
+    try:
+        obj: Any = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < 0 or end <= start:
+            raise RedefineError(
+                f"no JSON object found in redefine response: {text[:200]!r}"
+            )
+        try:
+            obj = json.loads(text[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise RedefineError(f"JSON parse failed: {exc}") from exc
+
+    if not isinstance(obj, dict):
+        raise RedefineError(
+            f"redefine response is not a JSON object: {type(obj).__name__}"
+        )
+
+    new_def = str(obj.get("new_definition", "")).strip()
+    if not new_def:
+        raise RedefineError("redefine response missing new_definition")
+
+    try:
+        confidence = float(obj.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence != confidence:
+        confidence = 0.0
+    confidence = max(0.0, min(10.0, confidence))
+
+    rationale = str(obj.get("rationale", "")).strip() or "(no rationale)"
+
+    return RedefineVerdict(
+        new_definition=new_def, confidence=confidence, rationale=rationale,
+    )
+
+
+def redefine_stale_entry(
+    entry: OntologyEntry,
+    db: Database,
+    adapter: Adapter,
+    *,
+    style_overlay: str | None = None,
+    min_confidence: float = 6.0,
+) -> RedefineVerdict | None:
+    """Ask `adapter` for a refreshed definition; append + clear stale on success.
+
+    Returns the verdict on success, None when confidence is below
+    `min_confidence` (the new definition is not written).
+    """
+    prompt = build_redefine_prompt(entry, db, style_overlay)
+    response = adapter.generate(prompt, want_json=True)
+    verdict = parse_redefine_verdict(response.text)
+
+    if verdict.confidence < min_confidence:
+        return None
+
+    now = _utcnow()
+    db.ontology_entries.update_one(
+        {"_id": entry.mpl_label},
+        {
+            "$push": {
+                "definitions": {
+                    "text": verdict.new_definition,
+                    "language": "en",
+                    "model_used": "rem_redefine",
+                    "decision_log_id": None,
+                    "created_at": now,
+                }
+            },
+            "$set": {"updated_at": now},
+        },
+    )
+    update_references(db, entry.mpl_label)
+    clear_stale(db, entry.mpl_label)
+    return verdict
+
+
+def redefine_pending_stale(
+    config: AppConfig,
+    db: Database,
+    adapter: Adapter,
+    *,
+    max_items: int = 10,
+    min_confidence: float = 6.0,
+) -> RedefineResult:
+    """Walk audit-flagged stale entries and rewrite definitions in place."""
+    stale = stale_entries_with_inconsistent_audit(db, limit=max_items)
+    style_overlay = load_style_overlay(config)
+    result = RedefineResult(items_at_start=len(stale))
+
+    for entry in stale:
+        try:
+            verdict = redefine_stale_entry(
+                entry, db, adapter,
+                style_overlay=style_overlay,
+                min_confidence=min_confidence,
+            )
+        except (AdapterError, RedefineError) as exc:
+            result.items_errored += 1
+            result.errors.append(f"{entry.mpl_label}: {exc}")
+            continue
+
+        if verdict is None:
+            result.items_skipped += 1
+            log.info(
+                "redefine: skipped %s (below min confidence)",
+                entry.mpl_label,
+            )
+            continue
+
+        result.items_redefined += 1
+        result.verdicts.append({
+            "mpl_label": entry.mpl_label,
+            "canonical_term": entry.canonical_term,
+            "confidence": verdict.confidence,
+            "rationale": verdict.rationale,
+            "new_definition": verdict.new_definition,
+        })
+        log.info(
+            "redefine: %s rewritten and cleared (conf %.1f)",
+            entry.mpl_label, verdict.confidence,
+        )
+
+    return result
+
+
 def audit_pending_stale(
     config: AppConfig,
     db: Database,

@@ -378,6 +378,111 @@ def test_parse_audit_verdict() -> None:
         parse_audit_verdict(json.dumps({"decision": "yes", "confidence": 9}))
 
 
+def test_redefine_appends_def_and_clears_stale(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import (
+        redefine_pending_stale, mark_dependents_stale, update_references,
+    )
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["depends on alpha"])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="audit_inconsistent",
+                          note="audit said inconsistent")
+    # Manually inject audit_inconsistent reason
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-002"},
+        {"$push": {"stale_reasons": {
+            "upstream_label": None,
+            "change_type": "audit_inconsistent",
+            "changed_at": None,
+            "note": "fake audit verdict",
+        }}}
+    )
+
+    verdict = json.dumps({
+        "new_definition": "Beta is the second concept that builds on alpha.",
+        "confidence": 8.0,
+        "rationale": "Updated to reflect alpha's current state.",
+    })
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = redefine_pending_stale(config, mongo_db, adapter, max_items=5)
+
+    assert result.items_redefined == 1
+    assert result.items_skipped == 0
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert stored.is_stale is False
+    assert stored.stale_reasons == []
+    assert len(stored.definitions) == 2
+    assert stored.definitions[-1].model_used == "rem_redefine"
+    assert "second concept" in stored.definitions[-1].text
+
+
+def test_redefine_skips_when_below_min_confidence(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import (
+        redefine_pending_stale, mark_dependents_stale, update_references,
+    )
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["depends on alpha"])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="x")
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-002"},
+        {"$push": {"stale_reasons": {
+            "change_type": "audit_inconsistent", "note": "ok",
+        }}}
+    )
+
+    verdict = json.dumps({
+        "new_definition": "shaky text",
+        "confidence": 4.0,
+        "rationale": "not sure",
+    })
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = redefine_pending_stale(
+        config, mongo_db, adapter, min_confidence=6.0,
+    )
+    assert result.items_redefined == 0
+    assert result.items_skipped == 1
+    # Stale flag remains; no new definition written
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert stored.is_stale is True
+    assert len(stored.definitions) == 1
+
+
+def test_redefine_only_picks_audit_flagged_items(mongo_db) -> None:
+    """Stale entries without an audit verdict are NOT redefined yet."""
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import (
+        redefine_pending_stale, mark_dependents_stale, update_references,
+    )
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["mentions alpha"])
+    update_references(mongo_db, "MPL-002")
+    # Mark stale via a structural change — no audit reason yet
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="reparented")
+
+    adapter = MockAdapter(default_response=json.dumps({
+        "new_definition": "x", "confidence": 9.0, "rationale": "x",
+    }))
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = redefine_pending_stale(config, mongo_db, adapter)
+    # No item picked up because no audit_inconsistent reason
+    assert result.items_at_start == 0
+    assert result.items_redefined == 0
+
+
 def test_append_operator_definition_updates_refs_and_cascades(mongo_db) -> None:
     _seed(mongo_db, "MPL-001", "alpha")
     _seed(mongo_db, "MPL-002", "beta", definitions=["mentions MPL-001."])

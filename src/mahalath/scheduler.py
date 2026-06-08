@@ -157,7 +157,7 @@ def _default_rem_job(config: AppConfig) -> None:
     # still consistent with their current upstream state. Cheap pass uses
     # the same gemma4:e2b runtime adapter; high-stakes runs can call
     # `mahalath audit-stale --adapter claude_api` manually.
-    from mahalath.staleness import audit_pending_stale
+    from mahalath.staleness import audit_pending_stale, redefine_pending_stale
     audit = audit_pending_stale(config, db, adapter, max_items=10)
     log.info(
         "scheduler: REM stale-audit — at_start=%d audited=%d cleared=%d "
@@ -166,7 +166,21 @@ def _default_rem_job(config: AppConfig) -> None:
         audit.items_still_stale, audit.items_errored,
     )
 
-    if result.items_accepted > 0 or audit.items_cleared > 0:
+    # Redefine pass: items the audit declared inconsistent get a fresh
+    # definition written against current upstream state.
+    redef = redefine_pending_stale(config, db, adapter, max_items=10)
+    log.info(
+        "scheduler: REM stale-redefine — at_start=%d redefined=%d "
+        "skipped=%d errored=%d",
+        redef.items_at_start, redef.items_redefined,
+        redef.items_skipped, redef.items_errored,
+    )
+
+    if (
+        result.items_accepted > 0
+        or audit.items_cleared > 0
+        or redef.items_redefined > 0
+    ):
         from mahalath.glossary import refresh_glossary
         exports = refresh_glossary(config, db)
         log.info(

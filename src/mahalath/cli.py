@@ -184,6 +184,28 @@ def main(argv: list[str] | None = None) -> int:
         help="Override adapter default model.",
     )
 
+    redefine_parser = subcommands.add_parser(
+        "redefine-stale",
+        help="For audit-flagged stale entries, ask the model for a fresh "
+        "definition consistent with current upstream; append + clear stale.",
+    )
+    redefine_parser.add_argument(
+        "--max-items", type=int, default=10,
+        help="Items to redefine per run (default 10).",
+    )
+    redefine_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter name (default: runtime.model_adapter).",
+    )
+    redefine_parser.add_argument(
+        "--model", default=None,
+        help="Override adapter default model.",
+    )
+    redefine_parser.add_argument(
+        "--min-confidence", type=float, default=6.0,
+        help="Don't write definitions below this confidence (default 6.0).",
+    )
+
     frontier_parser = subcommands.add_parser(
         "frontier-review",
         help="Adjudicate pending_review proposals via a frontier model. "
@@ -335,6 +357,15 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             adapter_name=args.adapter,
             model_override=args.model,
+        )
+
+    if args.command == "redefine-stale":
+        return _redefine_stale(
+            config,
+            max_items=args.max_items,
+            adapter_name=args.adapter,
+            model_override=args.model,
+            min_confidence=args.min_confidence,
         )
 
     if args.command == "frontier-review":
@@ -1070,6 +1101,62 @@ def _audit_stale(
         "items_audited": result.items_audited,
         "items_cleared": result.items_cleared,
         "items_still_stale": result.items_still_stale,
+        "items_errored": result.items_errored,
+        "verdicts": result.verdicts,
+        "errors": result.errors,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _redefine_stale(
+    config: AppConfig,
+    *,
+    max_items: int,
+    adapter_name: str | None,
+    model_override: str | None,
+    min_confidence: float,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, get_database
+    from mahalath.staleness import redefine_pending_stale
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    try:
+        db = get_database(config)
+        result = redefine_pending_stale(
+            config, db, adapter,
+            max_items=max_items, min_confidence=min_confidence,
+        )
+        if result.items_redefined > 0:
+            from mahalath.glossary import refresh_glossary
+            refresh_glossary(config, db)
+    finally:
+        close_all()
+
+    payload = {
+        "ok": True,
+        "adapter": effective_adapter,
+        "model": getattr(adapter, "default_model", None),
+        "items_at_start": result.items_at_start,
+        "items_redefined": result.items_redefined,
+        "items_skipped": result.items_skipped,
         "items_errored": result.items_errored,
         "verdicts": result.verdicts,
         "errors": result.errors,
