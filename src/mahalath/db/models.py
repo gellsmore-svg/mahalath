@@ -59,13 +59,45 @@ class DocumentRecord(_MahalathModel):
     schema_version: int = SCHEMA_VERSION
 
 
+class DefinitionContext(_MahalathModel):
+    """A frame within which definitions are interpreted.
+
+    Real ontologies are polysemous: the substrate is legitimately the
+    "generic underlying medium" (structural frame), "the grammatical
+    mechanism of creaturely existence" (theological frame), and "the
+    configuration host for vortons" (physical frame). Each definition
+    speaks from a context; the context itself is a first-class object
+    with a name and a description so the chat can present each
+    correctly.
+
+    `context_id` is the stable key; `name` is the short tag the model
+    sees ("theological"); `description` is what that tag means in
+    this corpus.
+    """
+
+    context_id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str
+    description: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    created_by: str | None = None
+    schema_version: int = SCHEMA_VERSION
+
+
 class DefinitionVersion(_MahalathModel):
-    """One agent-authored definition of an ontology entry."""
+    """One agent-authored definition of an ontology entry.
+
+    `context_id` (optional) names the frame this definition speaks
+    within. Multiple definitions on the same entry with DIFFERENT
+    contexts are co-equal — neither overrides the other. Definitions
+    with no context_id are treated as frame-unspecified (the Stage 1
+    default).
+    """
 
     text: str
     language: str = "en"
     model_used: str | None = None
     decision_log_id: str | None = None
+    context_id: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

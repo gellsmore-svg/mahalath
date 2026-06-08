@@ -20,6 +20,7 @@ from mahalath.db.models import (
     ActionProposal,
     AgentExchange,
     DecisionLogEntry,
+    DefinitionContext,
     DocumentRecord,
     OntologyEntry,
     OntologyReview,
@@ -87,6 +88,29 @@ class OntologyEntryRepository:
         return [
             OntologyEntry.model_validate(doc)
             for doc in self._col.find({"canonical_term": term})
+        ]
+
+
+class DefinitionContextRepository:
+    def __init__(self, db: Database) -> None:
+        self._col: Collection = db.definition_contexts
+
+    def insert(self, ctx: DefinitionContext) -> DefinitionContext:
+        self._col.insert_one(ctx.model_dump())
+        return ctx
+
+    def get(self, context_id: str) -> DefinitionContext | None:
+        doc = self._col.find_one({"context_id": context_id})
+        return DefinitionContext.model_validate(doc) if doc else None
+
+    def get_by_name(self, name: str) -> DefinitionContext | None:
+        doc = self._col.find_one({"name": name})
+        return DefinitionContext.model_validate(doc) if doc else None
+
+    def all(self) -> list[DefinitionContext]:
+        return [
+            DefinitionContext.model_validate(doc)
+            for doc in self._col.find().sort("created_at", 1)
         ]
 
 

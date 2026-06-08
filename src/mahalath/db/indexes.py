@@ -80,4 +80,10 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.ontology_reviews.create_index([("created_at", DESCENDING)]),
     ]
 
+    created["definition_contexts"] = [
+        db.definition_contexts.create_index("context_id", unique=True),
+        db.definition_contexts.create_index("name", unique=True),
+        db.definition_contexts.create_index([("created_at", DESCENDING)]),
+    ]
+
     return created

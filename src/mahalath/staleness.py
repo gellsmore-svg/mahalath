@@ -272,14 +272,22 @@ def append_operator_definition(
     text: str,
     *,
     language: str = "en",
+    context_id: str | None = None,
     cascade: bool = True,
     note: str | None = None,
 ) -> None:
     """Append an operator-authored definition AND propagate staleness.
 
+    Per the polysemy design (S2.22), `context_id` tags the frame this
+    definition speaks within. Multiple definitions with DIFFERENT
+    contexts are co-equal — appending one does NOT supersede others
+    in different contexts. Appending one in the SAME context (and
+    same model_used) still marks dependents stale because the
+    definitional content for that frame has changed.
+
     This is the canonical way to add an operator definition (replaces
     direct `$push: definitions` patterns). It:
-      - appends the definition
+      - appends the definition (with optional context_id)
       - recomputes references_labels for this entry
       - marks dependents stale because this entry's definitional
         content just changed
@@ -294,6 +302,7 @@ def append_operator_definition(
                     "language": language,
                     "model_used": "operator",
                     "decision_log_id": None,
+                    "context_id": context_id,
                     "created_at": now,
                 }
             },

@@ -147,7 +147,17 @@ def build_chat_prompt(
     context_entries: list[OntologyEntry],
     *,
     style_overlay: str | None = None,
+    definition_contexts: dict | None = None,
 ) -> str:
+    """Build the chat prompt.
+
+    `definition_contexts` (optional) is a {context_id → DefinitionContext}
+    dict used to group an entry's multiple definitions by their frame.
+    Per the polysemy design, multiple definitions with different contexts
+    are co-equal — the prompt explicitly tells the model not to pick one
+    "correct" definition, but to surface the relevant frame(s) for the
+    question.
+    """
     parts: list[str] = []
     parts.append("You are an assistant for the Mahalath ontology.")
     parts.append("")
@@ -155,9 +165,18 @@ def build_chat_prompt(
         "The user is asking about the corpus. Below is the relevant subset "
         "of the live ontology. Answer the question grounded in these "
         "entries. Cite specific MPL labels in your prose so the user can "
-        "click through. If an entry is flagged stale or has multiple "
-        "definitions, note that explicitly. If the context doesn't cover "
-        "the question, say so honestly rather than speculating."
+        "click through. If the context doesn't cover the question, say so "
+        "honestly rather than speculating."
+    )
+    parts.append("")
+    parts.append(
+        "POLYSEMY NOTE: a single entry may carry MULTIPLE definitions, each "
+        "speaking from a different context (theological, structural, "
+        "physical, etc.). These are CO-EQUAL — none supersedes another. "
+        "When a question implies a particular frame, surface the matching "
+        "context's definition. When a question is frame-neutral, present "
+        "multiple contexts explicitly (e.g., 'theologically, MPL-X is …; "
+        "structurally, MPL-X is …')."
     )
     parts.append("")
 
@@ -165,7 +184,7 @@ def build_chat_prompt(
         parts.append("ONTOLOGY CONTEXT")
         parts.append("")
         for entry in context_entries:
-            parts.extend(_render_entry_for_chat(entry))
+            parts.extend(_render_entry_for_chat(entry, definition_contexts))
             parts.append("")
     else:
         parts.append("ONTOLOGY CONTEXT")
@@ -213,7 +232,18 @@ def build_chat_prompt(
     return "\n".join(parts)
 
 
-def _render_entry_for_chat(entry: OntologyEntry) -> list[str]:
+def _render_entry_for_chat(
+    entry: OntologyEntry,
+    contexts: dict | None = None,
+) -> list[str]:
+    """Render an entry for the chat prompt, with definitions grouped by context.
+
+    `contexts` (optional) is a {context_id → DefinitionContext} map.
+    When given, definitions are grouped by their context_id and each
+    group is labeled with the context name + description so the model
+    sees which frame each definition speaks within. When absent,
+    definitions are listed flat (Stage 1 behaviour).
+    """
     lines: list[str] = []
     lines.append(f"--- {entry.mpl_label}: {entry.canonical_term} ---")
     parent = entry.parent_label or "(top-level)"
@@ -224,11 +254,39 @@ def _render_entry_for_chat(entry: OntologyEntry) -> list[str]:
             note = r.get("note") or ""
             change_type = r.get("change_type", "?")
             lines.append(f"    - {change_type}: {note}")
+
     if entry.definitions:
-        lines.append("  Definitions (most recent first):")
-        for d in reversed(entry.definitions):
-            attrib = d.model_used or "?"
-            lines.append(f"    [{attrib}] {d.text}")
+        if contexts:
+            # Group by context_id; preserve order of first appearance
+            groups: dict[str | None, list] = {}
+            order: list[str | None] = []
+            for d in entry.definitions:
+                cid = d.context_id
+                if cid not in groups:
+                    groups[cid] = []
+                    order.append(cid)
+                groups[cid].append(d)
+
+            lines.append(
+                "  Definitions (multiple contexts are co-equal — each speaks "
+                "from its own frame; none supersedes another):"
+            )
+            for cid in order:
+                if cid and cid in contexts:
+                    ctx = contexts[cid]
+                    lines.append(
+                        f"    Context [{ctx.name}] — {ctx.description}"
+                    )
+                else:
+                    lines.append("    Context [unspecified]")
+                for d in groups[cid]:
+                    attrib = d.model_used or "?"
+                    lines.append(f"      [{attrib}] {d.text}")
+        else:
+            lines.append("  Definitions (most recent first):")
+            for d in reversed(entry.definitions):
+                attrib = d.model_used or "?"
+                lines.append(f"    [{attrib}] {d.text}")
     if entry.references_labels:
         lines.append(
             f"  References: {', '.join(entry.references_labels[:8])}"
@@ -347,8 +405,16 @@ def answer_question(
         max_entries=max_context_entries,
         focus_label=focus_label,
     )
+    # Pull the definition_contexts table so the prompt can group
+    # definitions by frame.
+    from mahalath.db.repositories import DefinitionContextRepository
+    contexts_list = DefinitionContextRepository(db).all()
+    contexts_map = {c.context_id: c for c in contexts_list}
+
     prompt = build_chat_prompt(
-        question, context_entries, style_overlay=style_overlay
+        question, context_entries,
+        style_overlay=style_overlay,
+        definition_contexts=contexts_map if contexts_map else None,
     )
 
     start = time.monotonic()

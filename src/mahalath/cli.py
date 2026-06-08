@@ -157,6 +157,26 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     subcommands.add_parser(
+        "list-contexts",
+        help="List definition contexts (frames within which definitions are interpreted).",
+    )
+    add_context_parser = subcommands.add_parser(
+        "add-context",
+        help="Define a new definition context (e.g., theological, structural).",
+    )
+    add_context_parser.add_argument("name", help="Short tag, e.g. 'theological'.")
+    add_context_parser.add_argument(
+        "--description",
+        required=True,
+        help="One-sentence description of what definitions in this context mean.",
+    )
+    show_context_parser = subcommands.add_parser(
+        "show-context",
+        help="Show one definition context by id or name.",
+    )
+    show_context_parser.add_argument("identifier")
+
+    subcommands.add_parser(
         "list-stale",
         help="List ontology entries flagged as stale (upstream changed).",
     )
@@ -344,6 +364,15 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             rem_cron=args.rem_cron,
         )
+
+    if args.command == "list-contexts":
+        return _list_contexts(config)
+
+    if args.command == "add-context":
+        return _add_context(config, name=args.name, description=args.description)
+
+    if args.command == "show-context":
+        return _show_context(config, identifier=args.identifier)
 
     if args.command == "list-stale":
         return _list_stale(config)
@@ -1001,6 +1030,93 @@ def _proposal_summary(p) -> dict[str, Any]:
         "operator_note": p.operator_note,
         "created_at": p.created_at,
     }
+
+
+def _list_contexts(config: AppConfig) -> int:
+    from mahalath.db import close_all, get_database, DefinitionContextRepository
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        contexts = DefinitionContextRepository(db).all()
+        payload = {
+            "count": len(contexts),
+            "contexts": [
+                {
+                    "context_id": c.context_id,
+                    "name": c.name,
+                    "description": c.description,
+                    "created_by": c.created_by,
+                    "created_at": str(c.created_at),
+                }
+                for c in contexts
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _add_context(config: AppConfig, *, name: str, description: str) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database, DefinitionContextRepository
+    from mahalath.db.models import DefinitionContext
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        repo = DefinitionContextRepository(db)
+        existing = repo.get_by_name(name)
+        if existing is not None:
+            print(
+                f"mahalath: a context named {name!r} already exists "
+                f"(id={existing.context_id}).",
+                file=sys.stderr,
+            )
+            return 13
+        ctx = DefinitionContext(
+            name=name, description=description, created_by="operator",
+        )
+        repo.insert(ctx)
+        print(json.dumps({
+            "ok": True,
+            "context_id": ctx.context_id,
+            "name": ctx.name,
+            "description": ctx.description,
+        }, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _show_context(config: AppConfig, *, identifier: str) -> int:
+    from mahalath.db import close_all, get_database, DefinitionContextRepository
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        repo = DefinitionContextRepository(db)
+        ctx = repo.get(identifier) or repo.get_by_name(identifier)
+        if ctx is None:
+            print(f"mahalath: no context with id or name {identifier!r}", file=sys.stderr)
+            return 14
+        print(json.dumps(ctx.model_dump(), indent=2, default=str))
+        return 0
+    finally:
+        close_all()
 
 
 def _list_stale(config: AppConfig) -> int:
