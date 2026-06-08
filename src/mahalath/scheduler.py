@@ -153,7 +153,20 @@ def _default_rem_job(config: AppConfig) -> None:
         for err in result.errors[:5]:
             log.warning("scheduler: REM error: %s", err)
 
-    if result.items_accepted > 0:
+    # Stale-audit pass: ask the model whether stale-flagged entries are
+    # still consistent with their current upstream state. Cheap pass uses
+    # the same gemma4:e2b runtime adapter; high-stakes runs can call
+    # `mahalath audit-stale --adapter claude_api` manually.
+    from mahalath.staleness import audit_pending_stale
+    audit = audit_pending_stale(config, db, adapter, max_items=10)
+    log.info(
+        "scheduler: REM stale-audit — at_start=%d audited=%d cleared=%d "
+        "still_stale=%d errored=%d",
+        audit.items_at_start, audit.items_audited, audit.items_cleared,
+        audit.items_still_stale, audit.items_errored,
+    )
+
+    if result.items_accepted > 0 or audit.items_cleared > 0:
         from mahalath.glossary import refresh_glossary
         exports = refresh_glossary(config, db)
         log.info(

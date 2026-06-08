@@ -1,46 +1,60 @@
 """Reference tracking + staleness flagging for the ontology graph.
 
 When an entry's definition is written it records which other MPL
-labels it explicitly references (regex on `MPL-NNN[.NNN…][a-z]?`).
+labels it explicitly references (regex on `MPL-NNN[.NNN…][a-z]?`)
+plus semantic-substring matches against the live ontology index.
 That gives the database a reverse-index: "who depends on MPL-X?".
 When MPL-X is later modified (definition changed, parent re-pointed,
 rollback) the dependents are flagged stale. Already-stale entries
 receive a new reason appended but stay flagged.
 
-Three things live here:
+Four things live here:
 
   Reference extraction.
       `extract_references(text)` regexes label tokens out of a single
-      definition text. `compute_references_for_entry(entry)` deduplicates
-      across all definitions on an entry, excludes the entry's own label.
-      Catch: definitions that reference other entries by canonical
-      term ("the Relational Substrate") rather than MPL label go
-      undetected here. An LLM extraction pass is the obvious upgrade;
-      this slice keeps it regex-only because most agent-generated
-      definitions in the current corpus DO carry the MPL identifier.
+      definition text. `extract_semantic_references` matches canonical
+      terms with word-boundary regex. `compute_references_for_entry`
+      merges both, excludes self.
 
   Invalidation.
       `mark_dependents_stale(db, upstream_label, ...)` walks the
       reverse-index and flags every entry that references the
-      upstream. Cascades by default, so newly-flagged entries
-      propagate to THEIR dependents. Cycle-safe via the `visited` set.
+      upstream. Cascades by default; cycle-safe via the `visited` set.
 
   Resolution.
-      `clear_stale(db, label)` is the unflag path. REM (next slice) or
-      a chat-mediated human review calls this once it's confirmed the
-      dependent's content is still valid against the new upstream.
+      `clear_stale(db, label)` is the unflag path. The REM stale-audit
+      job (`audit_pending_stale`) calls it when the model confirms
+      the dependent's definition is still consistent with current
+      upstream state.
+
+  Audit pass.
+      `audit_pending_stale(config, db, adapter, ...)` walks `list_stale`,
+      asks an adapter (gemma4:e2b cheap pass, claude_api for higher
+      stakes) to read each stale entry alongside its referenced
+      upstreams' current state, and either clears or appends a
+      verdict. Wires into the scheduler's REM job to complete the
+      self-healing loop.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from pymongo.database import Database
 
+from mahalath.adapters.base import Adapter, AdapterError
+from mahalath.config import AppConfig
 from mahalath.db.models import OntologyEntry
 from mahalath.db.repositories import OntologyEntryRepository
+from mahalath.style import load_style_overlay, render_style_block
+
+
+log = logging.getLogger("mahalath.staleness")
 
 
 _MPL_LABEL_PATTERN = re.compile(r"\bMPL-\d{3}(?:\.\d{3})*[a-z]?\b")
@@ -329,3 +343,267 @@ def backfill_references(db: Database) -> dict[str, int]:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# --- Audit pass -----------------------------------------------------------
+
+
+class AuditError(Exception):
+    """Raised when an audit verdict cannot be parsed."""
+
+
+@dataclass(frozen=True)
+class StalenessAuditVerdict:
+    decision: str  # consistent | inconsistent | unclear
+    confidence: float
+    reasoning: str
+
+
+@dataclass
+class StalenessAuditResult:
+    items_at_start: int = 0
+    items_audited: int = 0
+    items_cleared: int = 0
+    items_still_stale: int = 0
+    items_errored: int = 0
+    verdicts: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+_AUDIT_CLEAR_THRESHOLD = 7.0
+
+
+def build_audit_prompt(
+    entry: OntologyEntry,
+    db: Database,
+    style_overlay: str | None,
+    *,
+    max_referenced: int = 10,
+    max_reasons: int = 5,
+) -> str:
+    """Build a context-rich consistency-check prompt for a stale entry."""
+    entries_repo = OntologyEntryRepository(db)
+
+    parts: list[str] = []
+    parts.append("You are an ontology consistency auditor.")
+    parts.append("")
+    parts.append(
+        "The entry below was previously accepted into the ontology. Since "
+        "then, one or more entries it references have been changed, and "
+        "the system has flagged this entry as potentially stale. Decide "
+        "whether the entry's current definition is still consistent with "
+        "the current state of its references."
+    )
+    parts.append("")
+    parts.append("STALE ENTRY")
+    parts.append(f"  Label: {entry.mpl_label}")
+    parts.append(f"  Term:  {entry.canonical_term!r}")
+    parts.append(
+        f"  Current parent: {entry.parent_label or '(top-level)'}"
+    )
+    if entry.definitions:
+        parts.append("  Definitions (most recent last):")
+        for i, d in enumerate(entry.definitions, 1):
+            attrib = d.model_used or "?"
+            parts.append(f"    {i}. (from {attrib}) {d.text}")
+    else:
+        parts.append("  (no definitions recorded)")
+    parts.append("")
+
+    parts.append("REFERENCED ENTRIES (their CURRENT state)")
+    if entry.references_labels:
+        for ref_label in entry.references_labels[:max_referenced]:
+            ref = entries_repo.get(ref_label)
+            if ref is None:
+                parts.append(f"  {ref_label}: (no longer exists)")
+                continue
+            ref_parent = ref.parent_label or "(top-level)"
+            parts.append(
+                f"  {ref_label} {ref.canonical_term!r}  parent: {ref_parent}"
+            )
+            if ref.definitions:
+                latest = ref.definitions[-1]
+                parts.append(
+                    f"    Current def ({latest.model_used or '?'}): "
+                    f"{latest.text}"
+                )
+    else:
+        parts.append("  (none recorded — semantic refs may have been missed)")
+    parts.append("")
+
+    if entry.stale_reasons:
+        parts.append("CHANGES THAT FLAGGED THIS ENTRY")
+        for r in entry.stale_reasons[-max_reasons:]:
+            ts = r.get("changed_at", "")
+            change_type = r.get("change_type", "?")
+            upstream = r.get("upstream_label", "?")
+            note = r.get("note", "")
+            parts.append(
+                f"  {ts}  {change_type} on {upstream}  ({note})"
+            )
+        parts.append("")
+
+    if style_overlay:
+        block = render_style_block(style_overlay)
+        if block:
+            parts.append(block)
+            parts.append("")
+
+    parts.append("YOUR TASK")
+    parts.append(
+        "Decide whether the entry's definition is still consistent with the "
+        "current state of its references and the corpus framing."
+    )
+    parts.append("")
+    parts.append("  CONSISTENT   — the definition still holds. The upstream changes do not invalidate it.")
+    parts.append("  INCONSISTENT — the definition relies on a state of the upstream that no longer matches.")
+    parts.append("  UNCLEAR      — genuine ambiguity. Operator review needed.")
+    parts.append("")
+    parts.append(
+        'Output ONLY a JSON object: '
+        '{"decision": "consistent" | "inconsistent" | "unclear", '
+        '"confidence": <number 0.0-10.0>, '
+        '"reasoning": "<one or two sentences>"}'
+    )
+    parts.append("No preamble, no markdown.")
+
+    return "\n".join(parts)
+
+
+def parse_audit_verdict(response_text: str) -> StalenessAuditVerdict:
+    text = response_text.strip()
+    if not text:
+        raise AuditError("audit adapter returned empty response")
+
+    if text.startswith("```"):
+        parts = text.split("```", 2)
+        if len(parts) >= 2:
+            inner = parts[1]
+            if inner.startswith("json"):
+                inner = inner[4:].lstrip()
+            text = inner
+
+    try:
+        obj: Any = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < 0 or end <= start:
+            raise AuditError(
+                f"no JSON object found in audit response: {text[:200]!r}"
+            )
+        try:
+            obj = json.loads(text[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise AuditError(
+                f"JSON parse failed: {exc}; raw: {text[:200]!r}"
+            ) from exc
+
+    if not isinstance(obj, dict):
+        raise AuditError(
+            f"audit response is not a JSON object: {type(obj).__name__}"
+        )
+
+    decision = str(obj.get("decision", "")).strip().lower()
+    if decision not in {"consistent", "inconsistent", "unclear"}:
+        raise AuditError(f"invalid decision value: {decision!r}")
+
+    try:
+        confidence = float(obj.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence != confidence:  # NaN
+        confidence = 0.0
+    confidence = max(0.0, min(10.0, confidence))
+
+    reasoning = str(obj.get("reasoning", "")).strip()
+    if not reasoning:
+        reasoning = "(no reasoning provided)"
+
+    return StalenessAuditVerdict(
+        decision=decision, confidence=confidence, reasoning=reasoning
+    )
+
+
+def audit_stale_entry(
+    entry: OntologyEntry,
+    db: Database,
+    adapter: Adapter,
+    *,
+    style_overlay: str | None = None,
+) -> StalenessAuditVerdict:
+    """Ask `adapter` whether `entry`'s definition is still consistent."""
+    prompt = build_audit_prompt(entry, db, style_overlay)
+    response = adapter.generate(prompt, want_json=True)
+    return parse_audit_verdict(response.text)
+
+
+def audit_pending_stale(
+    config: AppConfig,
+    db: Database,
+    adapter: Adapter,
+    *,
+    max_items: int = 10,
+    clear_threshold: float = _AUDIT_CLEAR_THRESHOLD,
+) -> StalenessAuditResult:
+    """Walk list_stale, audit each item, clear if still consistent.
+
+    `clear_threshold` is the minimum confidence required to clear a
+    stale flag. Below the threshold, the audit's verdict is appended
+    to the entry's stale_reasons but the flag remains.
+    """
+    stale = list_stale(db, limit=max_items)
+    style_overlay = load_style_overlay(config)
+    result = StalenessAuditResult(items_at_start=len(stale))
+
+    for entry in stale:
+        try:
+            verdict = audit_stale_entry(
+                entry, db, adapter, style_overlay=style_overlay
+            )
+        except (AdapterError, AuditError) as exc:
+            result.items_errored += 1
+            result.errors.append(f"{entry.mpl_label}: {exc}")
+            continue
+
+        result.items_audited += 1
+        result.verdicts.append({
+            "mpl_label": entry.mpl_label,
+            "canonical_term": entry.canonical_term,
+            "decision": verdict.decision,
+            "confidence": verdict.confidence,
+            "reasoning": verdict.reasoning,
+        })
+
+        if (
+            verdict.decision == "consistent"
+            and verdict.confidence >= clear_threshold
+        ):
+            clear_stale(db, entry.mpl_label)
+            result.items_cleared += 1
+            log.info(
+                "audit: cleared %s (%s, conf %.1f)",
+                entry.mpl_label, entry.canonical_term, verdict.confidence,
+            )
+        else:
+            db.ontology_entries.update_one(
+                {"_id": entry.mpl_label},
+                {"$push": {"stale_reasons": {
+                    "upstream_label": None,
+                    "change_type": f"audit_{verdict.decision}",
+                    "changed_at": _utcnow(),
+                    "note": (
+                        f"staleness audit ({verdict.confidence:.1f}): "
+                        f"{verdict.reasoning}"
+                    ),
+                }}},
+            )
+            result.items_still_stale += 1
+            log.info(
+                "audit: kept stale %s (%s, %s/%s conf %.1f)",
+                entry.mpl_label, entry.canonical_term,
+                verdict.decision, verdict.confidence,
+                verdict.confidence,
+            )
+
+    return result

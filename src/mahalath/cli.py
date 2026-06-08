@@ -166,6 +166,24 @@ def main(argv: list[str] | None = None) -> int:
         "ontology entry. Use on databases that pre-date S2.17.",
     )
 
+    audit_stale_parser = subcommands.add_parser(
+        "audit-stale",
+        help="Walk list_stale, ask the model whether each entry's "
+        "definition is still consistent; clear the flag on convergence.",
+    )
+    audit_stale_parser.add_argument(
+        "--max-items", type=int, default=10,
+        help="Items to audit per run (default 10).",
+    )
+    audit_stale_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter name (default: runtime.model_adapter from config).",
+    )
+    audit_stale_parser.add_argument(
+        "--model", default=None,
+        help="Override adapter default model.",
+    )
+
     frontier_parser = subcommands.add_parser(
         "frontier-review",
         help="Adjudicate pending_review proposals via a frontier model. "
@@ -310,6 +328,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "backfill-references":
         return _backfill_references(config)
+
+    if args.command == "audit-stale":
+        return _audit_stale(
+            config,
+            max_items=args.max_items,
+            adapter_name=args.adapter,
+            model_override=args.model,
+        )
 
     if args.command == "frontier-review":
         return _frontier_review(
@@ -996,6 +1022,60 @@ def _backfill_references(config: AppConfig) -> int:
         return 0
     finally:
         close_all()
+
+
+def _audit_stale(
+    config: AppConfig,
+    *,
+    max_items: int,
+    adapter_name: str | None,
+    model_override: str | None,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, get_database
+    from mahalath.staleness import audit_pending_stale
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    try:
+        db = get_database(config)
+        result = audit_pending_stale(config, db, adapter, max_items=max_items)
+        # Refresh glossary if anything cleared (status changed).
+        if result.items_cleared > 0:
+            from mahalath.glossary import refresh_glossary
+            refresh_glossary(config, db)
+    finally:
+        close_all()
+
+    payload = {
+        "ok": True,
+        "adapter": effective_adapter,
+        "model": getattr(adapter, "default_model", None),
+        "items_at_start": result.items_at_start,
+        "items_audited": result.items_audited,
+        "items_cleared": result.items_cleared,
+        "items_still_stale": result.items_still_stale,
+        "items_errored": result.items_errored,
+        "verdicts": result.verdicts,
+        "errors": result.errors,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _frontier_review(

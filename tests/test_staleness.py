@@ -267,6 +267,117 @@ def test_list_stale_returns_only_flagged(mongo_db) -> None:
 # --- Operator definition helper -------------------------------------------
 
 
+def test_audit_clears_when_consistent_at_threshold(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["foundational concept"])
+    _seed(mongo_db, "MPL-002", "beta",
+          definitions=["beta builds on alpha — see also."])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="definition_updated")
+    # MPL-002 is now stale.
+
+    verdict = json.dumps({
+        "decision": "consistent",
+        "confidence": 8.5,
+        "reasoning": "beta's definition still holds under current alpha",
+    })
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = audit_pending_stale(config, mongo_db, adapter, max_items=5)
+
+    assert result.items_audited == 1
+    assert result.items_cleared == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert stored.is_stale is False
+    assert stored.stale_reasons == []
+
+
+def test_audit_keeps_stale_when_inconsistent(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["depends on alpha"])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="definition_updated")
+
+    verdict = json.dumps({
+        "decision": "inconsistent",
+        "confidence": 9.0,
+        "reasoning": "alpha was redefined to mean something else",
+    })
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = audit_pending_stale(config, mongo_db, adapter)
+
+    assert result.items_still_stale == 1
+    assert result.items_cleared == 0
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert stored.is_stale is True
+    # The audit verdict was appended as an extra stale_reason
+    assert any(
+        r.get("change_type") == "audit_inconsistent" for r in stored.stale_reasons
+    )
+
+
+def test_audit_keeps_stale_when_below_threshold(mongo_db) -> None:
+    """Consistent verdict but low confidence → keep stale for safety."""
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["mentions alpha"])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="x")
+
+    verdict = json.dumps({"decision": "consistent", "confidence": 5.0, "reasoning": "shrug"})
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = audit_pending_stale(config, mongo_db, adapter)
+    assert result.items_cleared == 0
+    assert result.items_still_stale == 1
+
+
+def test_audit_unclear_routes_to_keep_stale(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _seed(mongo_db, "MPL-002", "beta", definitions=["mentions alpha"])
+    update_references(mongo_db, "MPL-002")
+    mark_dependents_stale(mongo_db, "MPL-001", change_type="x")
+
+    verdict = json.dumps({"decision": "unclear", "confidence": 9.0, "reasoning": "ambiguous"})
+    adapter = MockAdapter(default_response=verdict)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    result = audit_pending_stale(config, mongo_db, adapter)
+    assert result.items_cleared == 0
+    assert result.items_still_stale == 1
+
+
+def test_parse_audit_verdict() -> None:
+    import json
+    from mahalath.staleness import parse_audit_verdict, AuditError
+    v = parse_audit_verdict(json.dumps({
+        "decision": "Consistent", "confidence": 8.0, "reasoning": "ok",
+    }))
+    assert v.decision == "consistent"  # case-folded
+    assert v.confidence == 8.0
+
+    with pytest.raises(AuditError):
+        parse_audit_verdict(json.dumps({"decision": "yes", "confidence": 9}))
+
+
 def test_append_operator_definition_updates_refs_and_cascades(mongo_db) -> None:
     _seed(mongo_db, "MPL-001", "alpha")
     _seed(mongo_db, "MPL-002", "beta", definitions=["mentions MPL-001."])
