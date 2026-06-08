@@ -354,6 +354,34 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _infer_context_name(
+    definition_text: str, available_contexts: list[dict]
+) -> str | None:
+    """Pick the context whose description has the strongest token overlap with
+    the definition text. Used as a fallback when the model omits context_name.
+
+    Word-boundary tokens >= 4 chars are scored. Empty overlap → None.
+    """
+    if not definition_text or not available_contexts:
+        return None
+    def_tokens = {
+        t.lower()
+        for t in re.findall(r"\b[A-Za-z]{4,}\b", definition_text)
+    }
+    best_name: str | None = None
+    best_score = 0
+    for ctx in available_contexts:
+        desc_tokens = {
+            t.lower()
+            for t in re.findall(r"\b[A-Za-z]{4,}\b", ctx.get("description", ""))
+        }
+        score = len(def_tokens & desc_tokens)
+        if score > best_score:
+            best_score = score
+            best_name = ctx.get("name")
+    return best_name if best_score > 0 else None
+
+
 # --- Audit pass -----------------------------------------------------------
 
 
@@ -556,6 +584,7 @@ class RedefineVerdict:
     new_definition: str
     confidence: float
     rationale: str
+    context_name: str | None = None
 
 
 @dataclass
@@ -597,6 +626,7 @@ def build_redefine_prompt(
     style_overlay: str | None,
     *,
     max_referenced: int = 10,
+    available_contexts: list[dict] | None = None,
 ) -> str:
     """Prompt the adapter to produce a new definition consistent with current upstream."""
     entries_repo = OntologyEntryRepository(db)
@@ -657,6 +687,18 @@ def build_redefine_prompt(
             parts.append(block)
             parts.append("")
 
+    if available_contexts:
+        parts.append("DEFINITION CONTEXTS available in this corpus")
+        for c in available_contexts:
+            parts.append(f"  - {c.get('name')}: {c.get('description', '')}")
+        names = ", ".join(c.get("name", "?") for c in available_contexts)
+        parts.append(
+            f"  REQUIRED: context_name must be EXACTLY ONE OF: {names}. "
+            f"Do NOT use null. Pick the single frame that your "
+            f"new_definition speaks within."
+        )
+        parts.append("")
+
     parts.append("YOUR TASK")
     parts.append(
         "Produce a single new definition (one or two sentences) for the "
@@ -665,12 +707,22 @@ def build_redefine_prompt(
         "term — only the definition text."
     )
     parts.append("")
-    parts.append(
-        'Output ONLY a JSON object: '
-        '{"new_definition": "<text>", '
-        '"confidence": <number 0.0-10.0>, '
-        '"rationale": "<one sentence on what you changed and why>"}'
-    )
+    if available_contexts:
+        names = " | ".join(c.get("name", "?") for c in available_contexts)
+        parts.append(
+            'Output ONLY a JSON object: '
+            '{"new_definition": "<text>", '
+            '"confidence": <number 0.0-10.0>, '
+            '"rationale": "<one sentence on what you changed and why>", '
+            f'"context_name": "<one of: {names}>"}}'
+        )
+    else:
+        parts.append(
+            'Output ONLY a JSON object: '
+            '{"new_definition": "<text>", '
+            '"confidence": <number 0.0-10.0>, '
+            '"rationale": "<one sentence on what you changed and why>"}'
+        )
 
     return "\n".join(parts)
 
@@ -721,8 +773,16 @@ def parse_redefine_verdict(response_text: str) -> RedefineVerdict:
 
     rationale = str(obj.get("rationale", "")).strip() or "(no rationale)"
 
+    raw_ctx = obj.get("context_name")
+    context_name: str | None = None
+    if isinstance(raw_ctx, str):
+        cleaned = raw_ctx.strip().strip("'\"")
+        if cleaned and cleaned.lower() not in {"null", "none", "unspecified", ""}:
+            context_name = cleaned
+
     return RedefineVerdict(
         new_definition=new_def, confidence=confidence, rationale=rationale,
+        context_name=context_name,
     )
 
 
@@ -733,18 +793,38 @@ def redefine_stale_entry(
     *,
     style_overlay: str | None = None,
     min_confidence: float = 6.0,
+    available_contexts: list[dict] | None = None,
 ) -> RedefineVerdict | None:
     """Ask `adapter` for a refreshed definition; append + clear stale on success.
 
     Returns the verdict on success, None when confidence is below
     `min_confidence` (the new definition is not written).
     """
-    prompt = build_redefine_prompt(entry, db, style_overlay)
+    prompt = build_redefine_prompt(
+        entry, db, style_overlay, available_contexts=available_contexts,
+    )
     response = adapter.generate(prompt, want_json=True)
     verdict = parse_redefine_verdict(response.text)
 
     if verdict.confidence < min_confidence:
         return None
+
+    # Resolve context name → context_id (None if unmatched).
+    # Small models (gemma4:e2b) often return null despite being asked to
+    # pick; fall back to a keyword-overlap heuristic over the available
+    # contexts' descriptions.
+    chosen_name = verdict.context_name
+    if not chosen_name and available_contexts:
+        chosen_name = _infer_context_name(
+            verdict.new_definition, available_contexts
+        )
+
+    context_id: str | None = None
+    if chosen_name:
+        from mahalath.db.repositories import DefinitionContextRepository
+        ctx = DefinitionContextRepository(db).get_by_name(chosen_name)
+        if ctx is not None:
+            context_id = ctx.context_id
 
     now = _utcnow()
     db.ontology_entries.update_one(
@@ -756,6 +836,7 @@ def redefine_stale_entry(
                     "language": "en",
                     "model_used": "rem_redefine",
                     "decision_log_id": None,
+                    "context_id": context_id,
                     "created_at": now,
                 }
             },
@@ -778,6 +859,15 @@ def redefine_pending_stale(
     """Walk audit-flagged stale entries and rewrite definitions in place."""
     stale = stale_entries_with_inconsistent_audit(db, limit=max_items)
     style_overlay = load_style_overlay(config)
+
+    # Snapshot the contexts table once so each redefine call sees them
+    # without re-querying.
+    from mahalath.db.repositories import DefinitionContextRepository
+    available_contexts = [
+        {"name": c.name, "description": c.description}
+        for c in DefinitionContextRepository(db).all()
+    ]
+
     result = RedefineResult(items_at_start=len(stale))
 
     for entry in stale:
@@ -786,6 +876,7 @@ def redefine_pending_stale(
                 entry, db, adapter,
                 style_overlay=style_overlay,
                 min_confidence=min_confidence,
+                available_contexts=available_contexts or None,
             )
         except (AdapterError, RedefineError) as exc:
             result.items_errored += 1

@@ -127,6 +127,7 @@ def _write_accepted(
     tree = OntologyTreeRepository(db)
     mpl_label = _assign_label(entries, parent_label=parent_label)
 
+    context_id = _resolve_context_id(db, result.final_context_name)
     entry = OntologyEntry(
         mpl_label=mpl_label,
         canonical_term=result.term,
@@ -137,6 +138,7 @@ def _write_accepted(
                 text=result.final_definition,
                 model_used=_model_used_in(result),
                 decision_log_id=result.decision_log_id,
+                context_id=context_id,
             )
         ],
         source_document_ids=[result.source_document_id],
@@ -239,3 +241,12 @@ def _model_used_in(result: DebateResult) -> str | None:
         if exchange.model:
             return exchange.model
     return None
+
+
+def _resolve_context_id(db: Database, context_name: str | None) -> str | None:
+    """Map a context name (e.g., 'structural') to its DefinitionContext id."""
+    if not context_name:
+        return None
+    from mahalath.db.repositories import DefinitionContextRepository
+    ctx = DefinitionContextRepository(db).get_by_name(context_name)
+    return ctx.context_id if ctx is not None else None

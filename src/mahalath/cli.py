@@ -694,6 +694,14 @@ def _run_pipeline_on_document(
             "document_id": document.document_id,
         }
 
+    # Snapshot the definition contexts once per document so each debate
+    # call sees the live frame options.
+    from mahalath.db.repositories import DefinitionContextRepository
+    available_contexts = [
+        {"name": c.name, "description": c.description}
+        for c in DefinitionContextRepository(db).all()
+    ]
+
     debated: list[dict[str, Any]] = []
     for candidate in candidates[:max_terms]:
         try:
@@ -704,6 +712,7 @@ def _run_pipeline_on_document(
                 adapter=adapter,
                 runtime=config.runtime,
                 style_overlay=style_overlay,
+                available_contexts=available_contexts or None,
             )
         except (DebateError, AdapterError) as exc:
             debated.append({

@@ -57,6 +57,7 @@ class AgentOpinion:
     definition: str
     explanation: str  # critique (PC) or rationale (SE)
     confidence: float
+    context_name: str | None = None
 
 
 @dataclass
@@ -69,6 +70,7 @@ class DebateResult:
     final_confidence: float | None
     iterations_used: int
     context: str = ""
+    final_context_name: str | None = None
     messages: list[DebateMessage] = field(default_factory=list)
     exchanges: list[AgentExchange] = field(default_factory=list)
 
@@ -81,19 +83,30 @@ def run_debate(
     runtime: RuntimeConfig,
     *,
     style_overlay: str | None = None,
+    available_contexts: list[dict] | None = None,
 ) -> DebateResult:
-    """Run the PrecisionCritic/SynthesisExplorer loop on a single term."""
+    """Run the PrecisionCritic/SynthesisExplorer loop on a single term.
+
+    `available_contexts` is a list of {name, description} dicts that
+    are surfaced to both agents in the prompt; each agent then picks
+    a context_name for its proposed definition. The SynthesisExplorer's
+    last choice becomes the DebateResult.final_context_name (which
+    persist_debate_result resolves to context_id).
+    """
     decision_log_id = str(uuid4())
     messages: list[DebateMessage] = []
     exchanges: list[AgentExchange] = []
 
     last_definition: str | None = None
     last_min_confidence: float | None = None
+    last_context_name: str | None = None
 
     for iteration in range(1, runtime.max_iterations_per_term + 1):
         # PrecisionCritic
         pc_prompt = _build_critic_prompt(
-            term, context, history=messages, style_overlay=style_overlay
+            term, context, history=messages,
+            style_overlay=style_overlay,
+            available_contexts=available_contexts,
         )
         pc_opinion, pc_exchange = _call_agent(
             adapter,
@@ -116,7 +129,9 @@ def run_debate(
 
         # SynthesisExplorer
         se_prompt = _build_explorer_prompt(
-            term, context, history=messages, style_overlay=style_overlay
+            term, context, history=messages,
+            style_overlay=style_overlay,
+            available_contexts=available_contexts,
         )
         se_opinion, se_exchange = _call_agent(
             adapter,
@@ -142,6 +157,7 @@ def run_debate(
         last_min_confidence = min_confidence
         # SynthesisExplorer's definition wins on accept; it has the last word.
         last_definition = se_opinion.definition
+        last_context_name = se_opinion.context_name
 
         if min_confidence >= runtime.confidence_threshold:
             return DebateResult(
@@ -153,6 +169,7 @@ def run_debate(
                 final_confidence=min_confidence,
                 iterations_used=iteration,
                 context=context,
+                final_context_name=last_context_name,
                 messages=messages,
                 exchanges=exchanges,
             )
@@ -167,6 +184,7 @@ def run_debate(
         final_confidence=last_min_confidence,
         iterations_used=runtime.max_iterations_per_term,
         context=context,
+        final_context_name=last_context_name,
         messages=messages,
         exchanges=exchanges,
     )
@@ -215,6 +233,7 @@ def _build_critic_prompt(
     history: list[DebateMessage],
     *,
     style_overlay: str | None = None,
+    available_contexts: list[dict] | None = None,
 ) -> str:
     from mahalath.style import render_style_block
 
@@ -230,7 +249,9 @@ def _build_critic_prompt(
     ])
     if history:
         parts.extend(["", "Debate so far:", _format_history(history)])
-    parts.extend(["", _OUTPUT_CONTRACT_CRITIC])
+    if available_contexts:
+        parts.extend(["", _format_contexts_block(available_contexts)])
+    parts.extend(["", _output_contract_critic(available_contexts)])
     return "\n".join(parts)
 
 
@@ -240,6 +261,7 @@ def _build_explorer_prompt(
     history: list[DebateMessage],
     *,
     style_overlay: str | None = None,
+    available_contexts: list[dict] | None = None,
 ) -> str:
     from mahalath.style import render_style_block
 
@@ -255,10 +277,55 @@ def _build_explorer_prompt(
         "",
         "Debate so far:",
         _format_history(history),
-        "",
-        _OUTPUT_CONTRACT_EXPLORER,
     ])
+    if available_contexts:
+        parts.extend(["", _format_contexts_block(available_contexts)])
+    parts.extend(["", _output_contract_explorer(available_contexts)])
     return "\n".join(parts)
+
+
+def _format_contexts_block(available_contexts: list[dict]) -> str:
+    lines = [
+        "Definition contexts available in this corpus (pick the one YOUR "
+        "definition speaks within — multiple definitions per term, each in "
+        "its own context, are co-equal; pick the frame for YOUR definition):",
+    ]
+    for c in available_contexts:
+        name = c.get("name", "?")
+        desc = c.get("description", "")
+        lines.append(f"  - {name}: {desc}")
+    names = ", ".join(c.get("name", "?") for c in available_contexts)
+    lines.append(
+        f"  Pick one of: {names}. Use null ONLY as a last resort when "
+        "your definition fits none of them."
+    )
+    return "\n".join(lines)
+
+
+def _output_contract_critic(available_contexts: list[dict] | None) -> str:
+    if not available_contexts:
+        return _OUTPUT_CONTRACT_CRITIC
+    return (
+        'Output ONLY a JSON object of the form '
+        '{"definition": "<one-sentence definition>", '
+        '"critique": "<remaining weaknesses or open questions>", '
+        '"confidence": <number 0.0-10.0>, '
+        '"context_name": "<one of the context names listed above, or null>"}. '
+        "No preamble, no Markdown, no commentary outside the JSON."
+    )
+
+
+def _output_contract_explorer(available_contexts: list[dict] | None) -> str:
+    if not available_contexts:
+        return _OUTPUT_CONTRACT_EXPLORER
+    return (
+        'Output ONLY a JSON object of the form '
+        '{"definition": "<refined one-sentence definition>", '
+        '"rationale": "<how you addressed the critic\'s points>", '
+        '"confidence": <number 0.0-10.0>, '
+        '"context_name": "<one of the context names listed above, or null>"}. '
+        "No preamble, no Markdown, no commentary outside the JSON."
+    )
 
 
 def _format_history(messages: list[DebateMessage]) -> str:
@@ -327,10 +394,17 @@ def parse_opinion(response_text: str) -> AgentOpinion:
         payload.get("critique") or payload.get("rationale") or ""
     ).strip()
     confidence = _coerce_confidence(payload.get("confidence"))
+    raw_ctx = payload.get("context_name")
+    context_name: str | None = None
+    if isinstance(raw_ctx, str):
+        cleaned = raw_ctx.strip().strip("'\"")
+        if cleaned and cleaned.lower() not in {"null", "none", "unspecified", ""}:
+            context_name = cleaned
     return AgentOpinion(
         definition=definition,
         explanation=explanation,
         confidence=confidence,
+        context_name=context_name,
     )
 
 
