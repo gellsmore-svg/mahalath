@@ -51,11 +51,22 @@ _MIN_TERM_LEN = 4
 
 
 @dataclass
+class SuggestedAction:
+    """An action the chat extracted from the conversation, pending operator confirmation."""
+
+    type: str  # propose_parent | propose_alias  (first slice)
+    payload: dict
+    reasoning: str
+    confidence: float
+
+
+@dataclass
 class ChatResponse:
     question: str
     answer: str
     context_labels: list[str]
     cited_labels: list[str]
+    suggested_actions: list[SuggestedAction]
     model_used: str
     duration_ms: int
 
@@ -171,10 +182,34 @@ def build_chat_prompt(
     parts.append("USER QUESTION")
     parts.append(question)
     parts.append("")
+    parts.append("OUTPUT FORMAT")
     parts.append(
-        "Answer in natural language, concise (2-6 sentences typical). "
-        "Cite MPL labels inline like (MPL-001) when grounding claims."
+        "Output ONLY a single JSON object of the form:\n"
+        '{\n'
+        '  "answer": "<your answer in natural language, 2-6 sentences. Cite MPL labels inline like (MPL-001).>",\n'
+        '  "suggested_actions": [\n'
+        '    { "type": "propose_parent",\n'
+        '      "child_label": "<MPL-id>",\n'
+        '      "parent_label": "<MPL-id>",\n'
+        '      "reasoning": "<one sentence>",\n'
+        '      "confidence": <0.0-10.0>\n'
+        '    },\n'
+        '    { "type": "propose_alias",\n'
+        '      "label": "<MPL-id>",\n'
+        '      "alias": "<text>",\n'
+        '      "reasoning": "<one sentence>",\n'
+        '      "confidence": <0.0-10.0>\n'
+        '    }\n'
+        '  ]\n'
+        "}\n"
     )
+    parts.append(
+        "Only include suggested_actions when the user's question implies "
+        "a concrete structural change (e.g. 'X should be a child of Y', "
+        "'add an alias to Z'). When the user is just asking a question, "
+        "return suggested_actions: []."
+    )
+    parts.append("No markdown fences, no preamble — just the JSON.")
     return "\n".join(parts)
 
 
@@ -211,6 +246,89 @@ def extract_cited_labels(text: str) -> list[str]:
     return list(dict.fromkeys(_MPL_LABEL_PATTERN.findall(text)))
 
 
+# --- Response parsing ----------------------------------------------------
+
+
+import json as _json
+
+
+def parse_chat_envelope(text: str) -> tuple[str, list[SuggestedAction]]:
+    """Parse the model's {answer, suggested_actions} JSON envelope.
+
+    Tolerant of fenced JSON, surrounding prose, and missing
+    suggested_actions. If the envelope can't be parsed at all, the raw
+    text is treated as the answer and no actions are returned — so the
+    chat keeps working even when the model doesn't follow the format.
+    """
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        parts = cleaned.split("```", 2)
+        if len(parts) >= 2:
+            inner = parts[1]
+            if inner.startswith("json"):
+                inner = inner[4:].lstrip()
+            cleaned = inner
+
+    obj: object
+    try:
+        obj = _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end < 0 or end <= start:
+            return cleaned, []
+        try:
+            obj = _json.loads(cleaned[start : end + 1])
+        except _json.JSONDecodeError:
+            return cleaned, []
+
+    if not isinstance(obj, dict):
+        return cleaned, []
+
+    answer = str(obj.get("answer", "")).strip()
+    if not answer:
+        # Model returned the envelope shape but with empty answer;
+        # fall back to the raw text so the user sees something.
+        answer = cleaned
+
+    raw_actions = obj.get("suggested_actions") or []
+    if not isinstance(raw_actions, list):
+        return answer, []
+
+    actions: list[SuggestedAction] = []
+    for raw in raw_actions:
+        if not isinstance(raw, dict):
+            continue
+        atype = str(raw.get("type", "")).strip()
+        if atype not in {"propose_parent", "propose_alias"}:
+            continue
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(10.0, confidence))
+        reasoning = str(raw.get("reasoning", "")).strip()
+        if atype == "propose_parent":
+            payload = {
+                "child_label": str(raw.get("child_label", "")).strip(),
+                "parent_label": str(raw.get("parent_label", "")).strip(),
+            }
+            if not payload["child_label"] or not payload["parent_label"]:
+                continue
+        else:  # propose_alias
+            payload = {
+                "label": str(raw.get("label", "")).strip(),
+                "alias": str(raw.get("alias", "")).strip(),
+            }
+            if not payload["label"] or not payload["alias"]:
+                continue
+        actions.append(SuggestedAction(
+            type=atype, payload=payload,
+            reasoning=reasoning, confidence=confidence,
+        ))
+    return answer, actions
+
+
 # --- Top-level API --------------------------------------------------------
 
 
@@ -235,17 +353,19 @@ def answer_question(
 
     start = time.monotonic()
     try:
-        response = adapter.generate(prompt, want_json=False)
+        response = adapter.generate(prompt, want_json=True)
     except AdapterError:
         raise
     duration_ms = int((time.monotonic() - start) * 1000)
 
-    cited = extract_cited_labels(response.text)
+    answer, actions = parse_chat_envelope(response.text)
+    cited = extract_cited_labels(answer)
     return ChatResponse(
         question=question,
-        answer=response.text,
+        answer=answer,
         context_labels=[e.mpl_label for e in context_entries],
         cited_labels=cited,
+        suggested_actions=actions,
         model_used=response.model,
         duration_ms=duration_ms,
     )

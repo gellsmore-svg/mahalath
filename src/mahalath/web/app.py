@@ -474,12 +474,52 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
     }
     const cited = (data.cited_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
     const ctx = (data.context_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
+    let actionsHtml = '';
+    if ((data.suggested_actions || []).length > 0) {
+      actionsHtml = '<h2>Suggested actions</h2>';
+      data.suggested_actions.forEach((a, i) => {
+        const payloadDesc = Object.entries(a.payload || {}).map(([k, v]) => k + '=' + JSON.stringify(v)).join(', ');
+        actionsHtml +=
+          '<div class="chatanswer" style="border-left: 4px solid #f0ad4e">' +
+          '<strong>' + a.type + '</strong> (' + a.confidence.toFixed(1) + ' conf): <code>' + payloadDesc + '</code>' +
+          '<p class="chatmeta">' + a.reasoning + '</p>' +
+          '<button class="accept" data-idx="' + i + '">Apply</button>' +
+          ' <button class="reject" data-idx="' + i + '">Discard</button>' +
+          '<div class="chatmeta apply-result" id="apply-result-' + i + '"></div>' +
+          '</div>';
+      });
+    }
     document.getElementById('answer').innerHTML =
       '<h2>Answer</h2>' +
       '<div class="chatanswer">' + data.answer.replace(/\\n\\n/g, '</p><p>').replace(/\\n/g, '<br>') + '</div>' +
       '<p class="chatmeta">Cited: ' + (cited || '<em>none</em>') + '</p>' +
       '<p class="chatmeta">Context entries: ' + (ctx || '<em>none</em>') + '</p>' +
-      '<p class="chatmeta"><em>' + data.duration_ms + 'ms · ' + data.model_used + '</em></p>';
+      '<p class="chatmeta"><em>' + data.duration_ms + 'ms · ' + data.model_used + '</em></p>' +
+      actionsHtml;
+    document.querySelectorAll('button.accept').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const action = data.suggested_actions[idx];
+        const ar = await fetch('/api/chat/apply_action', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(action),
+        });
+        const aData = await ar.json();
+        document.getElementById('apply-result-' + idx).innerHTML =
+          ar.ok ? ('<strong>' + aData.status + '</strong>: ' + aData.detail + ' (proposal ' + aData.proposal_id.slice(0, 8) + '…)')
+                : ('<span style="color:#a00">error: ' + (aData.detail || ar.status) + '</span>');
+        btn.disabled = true;
+      });
+    });
+    document.querySelectorAll('button.reject').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const idx = parseInt(btn.dataset.idx, 10);
+        document.getElementById('apply-result-' + idx).innerHTML = '<em>discarded</em>';
+        btn.disabled = true;
+        document.querySelector('button.accept[data-idx="' + idx + '"]').disabled = true;
+      });
+    });
   } catch (err) {
     document.getElementById('answer').innerHTML = '<p style="color:#a00">network error: ' + err + '</p>';
   }
@@ -532,8 +572,67 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
             "answer": response.answer,
             "context_labels": response.context_labels,
             "cited_labels": response.cited_labels,
+            "suggested_actions": [
+                {
+                    "type": a.type,
+                    "payload": a.payload,
+                    "reasoning": a.reasoning,
+                    "confidence": a.confidence,
+                }
+                for a in response.suggested_actions
+            ],
             "model_used": response.model_used,
             "duration_ms": response.duration_ms,
+        })
+
+    @app.post("/api/chat/apply_action")
+    def chat_apply_action(
+        request: Request, payload: dict = Body(default_factory=dict)
+    ) -> JSONResponse:
+        from mahalath.actions import (
+            ProposeAlias as _ProposeAlias,
+            ProposeParent as _ProposeParent,
+            dispatch as _dispatch,
+        )
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        atype = str(payload.get("type", "")).strip()
+        action_payload = payload.get("payload") or {}
+        confidence = float(payload.get("confidence", 0.0))
+        reasoning = str(payload.get("reasoning", "")).strip() or (
+            "operator confirmed via chat"
+        )
+
+        if atype == "propose_parent":
+            action = _ProposeParent(
+                child_label=str(action_payload.get("child_label", "")),
+                parent_label=str(action_payload.get("parent_label", "")),
+                reason=reasoning,
+                confidence=confidence,
+                proposed_by="operator_via_chat",
+            )
+        elif atype == "propose_alias":
+            action = _ProposeAlias(
+                label=str(action_payload.get("label", "")),
+                alias=str(action_payload.get("alias", "")),
+                reason=reasoning,
+                confidence=confidence,
+                proposed_by="operator_via_chat",
+            )
+        else:
+            raise HTTPException(400, f"unsupported action type: {atype!r}")
+
+        result = _dispatch(action, db)
+        from mahalath.glossary import refresh_glossary
+        if result.status == "applied":
+            refresh_glossary(config, db)
+        return JSONResponse({
+            "ok": True,
+            "proposal_id": result.proposal_id,
+            "status": result.status,
+            "detail": result.detail,
+            "payload": result.payload,
         })
 
     @app.get("/documents", response_class=HTMLResponse)

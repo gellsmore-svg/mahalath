@@ -126,18 +126,89 @@ def test_extract_cited_labels() -> None:
 
 
 def test_answer_question_end_to_end(mongo_db) -> None:
+    import json as _json
     _seed(mongo_db, "MPL-001", "Relational Substrate",
           defs=["Fundamental relational ground."])
     _seed(mongo_db, "MPL-004", "substrate",
           defs=["The generic underlying medium."])
 
-    adapter = MockAdapter(
-        default_response="RS (MPL-001) is a specific kind of substrate (MPL-004)."
-    )
+    envelope = _json.dumps({
+        "answer": "RS (MPL-001) is a specific kind of substrate (MPL-004).",
+        "suggested_actions": [],
+    })
+    adapter = MockAdapter(default_response=envelope)
     response = answer_question(
         "How are RS and substrate related?", mongo_db, adapter,
     )
     assert "RS" in response.answer
     assert "MPL-001" in response.cited_labels
     assert "MPL-004" in response.cited_labels
-    assert response.context_labels  # at least one entry was selected
+    assert response.context_labels
+
+
+def test_parse_chat_envelope_extracts_answer_and_actions() -> None:
+    import json as _json
+    from mahalath.chat import parse_chat_envelope
+    envelope = _json.dumps({
+        "answer": "Yes, that's right.",
+        "suggested_actions": [
+            {
+                "type": "propose_parent",
+                "child_label": "MPL-005",
+                "parent_label": "MPL-003",
+                "reasoning": "user proposed it",
+                "confidence": 8.0,
+            },
+        ],
+    })
+    answer, actions = parse_chat_envelope(envelope)
+    assert answer == "Yes, that's right."
+    assert len(actions) == 1
+    assert actions[0].type == "propose_parent"
+    assert actions[0].payload == {"child_label": "MPL-005", "parent_label": "MPL-003"}
+    assert actions[0].confidence == 8.0
+
+
+def test_parse_chat_envelope_tolerates_raw_text() -> None:
+    """When the model ignores the format, fall back to raw text as the answer."""
+    from mahalath.chat import parse_chat_envelope
+    answer, actions = parse_chat_envelope(
+        "Substrate (MPL-004) is the generic underlying medium."
+    )
+    assert "Substrate" in answer
+    assert actions == []
+
+
+def test_parse_chat_envelope_drops_invalid_action_types() -> None:
+    import json as _json
+    from mahalath.chat import parse_chat_envelope
+    envelope = _json.dumps({
+        "answer": "x",
+        "suggested_actions": [
+            {"type": "propose_merge", "confidence": 8.0},  # not supported in chat
+            {
+                "type": "propose_alias",
+                "label": "MPL-001",
+                "alias": "primary",
+                "reasoning": "synonym",
+                "confidence": 7.5,
+            },
+        ],
+    })
+    answer, actions = parse_chat_envelope(envelope)
+    assert len(actions) == 1
+    assert actions[0].type == "propose_alias"
+
+
+def test_parse_chat_envelope_skips_actions_missing_required_fields() -> None:
+    import json as _json
+    from mahalath.chat import parse_chat_envelope
+    envelope = _json.dumps({
+        "answer": "x",
+        "suggested_actions": [
+            {"type": "propose_parent", "child_label": "MPL-001"},  # missing parent
+            {"type": "propose_alias", "label": "MPL-001"},  # missing alias text
+        ],
+    })
+    _, actions = parse_chat_envelope(envelope)
+    assert actions == []
