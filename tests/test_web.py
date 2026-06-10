@@ -67,6 +67,27 @@ def test_ontology_list_shows_entries(app_client, mongo_db) -> None:
     assert "Relational Substrate" in r.text
 
 
+def test_ontology_list_badges_untagged_entries(app_client, mongo_db) -> None:
+    ctx = DefinitionContext(name="structural", description="Structural frame.")
+    DefinitionContextRepository(mongo_db).insert(ctx)
+    repo = OntologyEntryRepository(mongo_db)
+    # MPL-001: one untagged definition → should show an "untagged 1" badge.
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="alpha", confidence=8.0,
+        definitions=[DefinitionVersion(text="Untagged.", model_used="operator")],
+    ))
+    # MPL-002: fully tagged → no badge.
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-002", canonical_term="beta", confidence=8.0,
+        definitions=[DefinitionVersion(text="Tagged.", model_used="gemma4:e2b",
+                                       context_id=ctx.context_id)],
+    ))
+    r = app_client.get("/ontology")
+    assert r.status_code == 200
+    assert "untagged 1" in r.text
+    assert "1 with untagged definitions" in r.text
+
+
 def test_ontology_detail_shows_definition(app_client, mongo_db) -> None:
     _seed_two_entries(mongo_db)
     r = app_client.get("/ontology/MPL-001")

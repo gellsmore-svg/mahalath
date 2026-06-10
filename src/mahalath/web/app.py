@@ -217,6 +217,11 @@ def _register_routes(app: FastAPI) -> None:
                 f'<a href="/ontology/{escape(entry.parent_label)}"><code>{escape(entry.parent_label)}</code></a>'
                 if entry.parent_label else '<span class="muted">top-level</span>'
             )
+            untagged = sum(1 for d in entry.definitions if not d.context_id)
+            contexts_cell = (
+                f'<span class="badge untagged">untagged {untagged}</span>'
+                if untagged else '<span class="muted">—</span>'
+            )
             rows.append(f"""
 <tr>
   <td><a href="/ontology/{escape(entry.mpl_label)}"><code>{escape(entry.mpl_label)}</code></a></td>
@@ -224,13 +229,19 @@ def _register_routes(app: FastAPI) -> None:
   <td>{entry.confidence:.1f}</td>
   <td>{parent}</td>
   <td>{len(children)}</td>
+  <td>{contexts_cell}</td>
 </tr>""")
 
+        untagged_entries = sum(1 for r in rows if "badge untagged" in r)
+        summary = (
+            f' <span class="muted">· {untagged_entries} with untagged definitions</span>'
+            if untagged_entries else ""
+        )
         body = f"""
-<h1>Ontology <span class="muted">({len(rows)})</span></h1>
+<h1>Ontology <span class="muted">({len(rows)})</span>{summary}</h1>
 <table>
-<tr><th>MPL</th><th>Term</th><th>Conf</th><th>Parent</th><th>Children</th></tr>
-{''.join(rows) or '<tr><td colspan="5" class="muted">(no entries yet)</td></tr>'}
+<tr><th>MPL</th><th>Term</th><th>Conf</th><th>Parent</th><th>Children</th><th>Contexts</th></tr>
+{''.join(rows) or '<tr><td colspan="6" class="muted">(no entries yet)</td></tr>'}
 </table>
 """
         return _base("Ontology", body, config.mongo.database)
