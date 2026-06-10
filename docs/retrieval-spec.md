@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-10
 Status: accepted design; not yet implemented (see "Phasing").
-Related: ADR-018, ADR-019, ADR-020, ADR-021.
+Related: ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023.
 
 ## Purpose
 
@@ -67,7 +67,39 @@ them.
    shaped so a semantic backend can be slotted behind `search_terms`
    later without changing callers.
 5. **Bundles are budgeted.** Output is pruned to a token budget — never
-   a raw tree dump (operator NFR).
+   a raw tree dump (operator NFR). Budget trims *breadth* (how many
+   candidate terms / alternatives) and verbosity — it never collapses
+   the frames of a confidently-matched term (see principle 6).
+6. **Retrieval surfaces all frames; the caller disambiguates (ADR-022).**
+   For a matched human term, retrieval returns *every* codified
+   meaning (one per frame), with provenance. It does not pick "the"
+   meaning. Choosing which frame(s) are relevant is the consuming LLM's
+   job, because only the consumer holds the question/context that
+   resolves the polysemy.
+7. **Returned meanings are reference-closed (ADR-023).** A description
+   written in codified terms is only interpretable if every codified
+   term it cites is also resolvable. So whenever a meaning's description
+   references other MPL labels, those entries are included in the bundle
+   too — transitively, until the set is closed, with a visited-set cycle
+   guard. The closure is mandatory: budget pressure degrades the
+   *fidelity* of deep nodes (compact label + active meaning instead of
+   full provenance) but never drops a referenced codified term.
+
+## Consumer model
+
+The same call serves two roles, and the caller decides how much to keep:
+
+- **Retrieval-LLM (pre-pruner).** Calls retrieval to pare context: reads
+  the full frame set, keeps the relevant meanings, forwards only those to
+  a downstream answer-LLM. Efficient context-window management.
+- **Answer-LLM (direct).** Calls retrieval itself and reasons over the
+  full set in one shot. Simpler, less context-efficient.
+
+Implication for the API: `build_bundle` defaults to returning all frames
+per matched term. A retrieval-LLM that has selected a subset can re-issue
+`get_codified`/`build_bundle` against the specific `(mpl_label,
+context_id)` handles it chose — retrieval stays read-only; selection
+state lives with the caller, not in Mahalath.
 
 ## Additive schema changes (the only ones permitted, per ADR-020)
 
@@ -104,9 +136,19 @@ get_codified(db, ref) -> CodifiedRef | None
 
 build_bundle(db, refs_or_terms, *, token_budget=1500, context=None)
         -> Bundle
-    Compose a prompt-ready bundle: best match + ranked alternatives per
-    input, pruned to token_budget. Emits both JSON and a compact NL
-    rendering. Resolves terms via search_terms first.
+    Compose a prompt-ready bundle. Resolves terms via search_terms, then
+    for each matched term includes ALL of its frame meanings (retrieval
+    never collapses polysemy — ADR-022). token_budget trims breadth
+    (how many candidate terms / ranked alternatives) and verbosity, not
+    the frame set of a matched term. Emits both JSON and a compact NL
+    rendering. A caller that has already chosen specific
+    (mpl_label, context_id) handles can pass those as refs to get just
+    those meanings back.
+    Reference closure (ADR-023): every MPL label cited inside an included
+    meaning's description is resolved and added to the bundle,
+    transitively, with a cycle guard. Closure nodes beyond the primary
+    matches are rendered compactly (label + active meaning) under budget
+    but are always present.
 
 subtree(db, label, *, depth=1) -> SubtreeSummary
     Limited-depth descendant summary using path/edges (operator FR-5).
@@ -123,11 +165,16 @@ propose_term(db, term, *, context=None, near=None) -> ProposalTemplate
   (`exact|alias|text|label`), `frames: list[str]`, `is_stale`.
 - `CodifiedRef`: `mpl_label`, `canonical_term`, `aliases`,
   `path: list[str]`, `parent_label`,
-  `meanings: list[{context_name, description, model_used,
+  `meanings: list[{context_id, context_name, description, model_used,
   consensus_score, created_at}]`, `references`, `referenced_by`,
-  `document_labels`, `is_stale`, `stale_reasons`.
-- `Bundle`: `entries: list[CodifiedRef-lite]`, `alternatives`,
-  `token_estimate`, `as_json`, `as_text` (compact NL).
+  `document_labels`, `is_stale`, `stale_reasons`. Each meaning's
+  `(mpl_label, context_id)` is the stable handle a caller keeps or
+  forwards; `context_name` is its readable label. All frames are
+  present — retrieval does not pre-select (ADR-022).
+- `Bundle`: `entries: list[CodifiedRef]` (the primary matches),
+  `closure: list[CodifiedRef-compact]` (transitively-referenced terms
+  pulled in to make every description self-contained — ADR-023),
+  `alternatives`, `token_estimate`, `as_json`, `as_text` (compact NL).
 - `SubtreeSummary`, `ProposalTemplate`: as named.
 
 The compact NL rendering reuses the `build_chat_prompt` idiom (MPL label
@@ -165,18 +212,26 @@ becomes one consumer of retrieval rather than a parallel implementation.
    maintain on insert/reparent, one-shot `backfill-paths` migration,
    `subtree()`.
 3. **S-C — `build_bundle` + `/api/retrieve` HTTP.** Token-budgeted
-   bundles, JSON + compact NL; wire chat's context block through it.
+   bundles, JSON + compact NL; reference-closure expansion (ADR-023)
+   with cycle guard; wire chat's context block through it.
 4. **S-D — `propose_term`** onto the existing undecided/ingestion path;
    optional `consensus_score` capture during debate.
 5. **S-E (optional, later) — Tirzah semantic backend** behind
    `search_terms` for fuzzy/semantic recall. Cross-project; needs an
    explicit go-ahead (ADR-014).
 
+## Resolved questions
+
+- **Q1 — RESOLVED (2026-06-10, operator).** Retrieval does not pick a
+  frame, so there is no single forced prose-citation form to choose. It
+  returns all frame meanings; each is keyed by `(mpl_label, context_id)`
+  and labelled with `context_name`. The consuming LLM decides which to
+  keep, and may cite them however it (or its downstream answer-LLM)
+  prefers — typically `MPL-004` plus the frame label it kept. Recorded as
+  ADR-022 ("retrieval surfaces all frames; the caller disambiguates").
+
 ## Open questions
 
-- **Q1.** Frame-specific references in prose: is `MPL-004#<context_id>`
-  the right surface form for "the theological substrate," or should the
-  pair be expressed some other way an LLM cites cleanly?
 - **Q2.** `token_budget` accounting: rough char/4 estimate in core, or a
   real tokenizer per adapter? Lean: char-based estimate in core, exact
   count optional via the active adapter.
@@ -186,3 +241,10 @@ becomes one consumer of retrieval rather than a parallel implementation.
 - **Q4.** Does the operator want a stable *external* alias for an MPL
   label (a human-pronounceable handle) without violating ADR-021? If so
   it is an `alias`, not a new key.
+- **Q5.** Reference granularity for closure (ADR-023): `references_labels`
+  is currently aggregated at the *entry* level, not per definition/frame.
+  Entry-level closure may pull in a term referenced only by a frame the
+  caller discarded. Acceptable for v1 (over-inclusion is safe); a later
+  refinement is per-`DefinitionVersion` reference tracking so closure
+  follows only the frames actually kept. Lean: ship entry-level closure
+  first, add per-meaning references if over-inclusion proves noisy.
