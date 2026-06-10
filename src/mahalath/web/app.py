@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from mahalath.config import AppConfig, load_config
 from mahalath.db import ensure_indexes, get_database
 from mahalath.db.repositories import (
+    DefinitionContextRepository,
     OntologyEntryRepository,
     OntologyTreeRepository,
     UndecidedQueueRepository,
@@ -85,6 +86,13 @@ button.rollback { border-color: #6c757d; color: #444; }
 .reason { font-size: 0.95em; background: #fff; padding: 0.5em 0.8em; border-left: 3px solid #ccc;
           margin: 0.4em 0; }
 .muted { color: #888; }
+.ctxgroup { margin: 0.6em 0 1.4em; }
+.ctxhead { display: flex; align-items: baseline; gap: 0.6em; flex-wrap: wrap; margin: 0.2em 0; }
+.ctxdesc { font-size: 0.85em; color: #555; }
+.badge.frame { background: #e7e0f5; color: #4b2e83; }
+.badge.untagged { background: #f3f3f3; color: #777; border: 1px dashed #bbb; }
+.polysemy { font-size: 0.9em; color: #4b2e83; background: #f6f2fd;
+            border-left: 3px solid #b9a6e0; padding: 0.5em 0.8em; margin: 0.4em 0; }
 .kvbox th { width: 12em; }
 .summary { display: flex; gap: 1em; flex-wrap: wrap; }
 .summary .card { background: white; border: 1px solid #ddd; border-radius: 6px;
@@ -236,10 +244,49 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, f"entry not found: {mpl_label}")
         children = OntologyTreeRepository(db).children_of(mpl_label)
 
-        defs_html = "".join(f"""
+        # Group definitions by their context (frame) so polysemy is visible:
+        # one section per frame, untagged definitions collected last.
+        contexts_by_id = {
+            c.context_id: c for c in DefinitionContextRepository(db).all()
+        }
+        groups: dict[str | None, list] = {}
+        for d in entry.definitions:
+            groups.setdefault(d.context_id, []).append(d)
+        ordered_cids: list[str | None] = [c for c in groups if c is not None]
+        if None in groups:
+            ordered_cids.append(None)
+
+        def _def_block(d: Any) -> str:
+            return f"""
 <div class="definition">{escape(d.text)}</div>
 <p class="attribution">— from <code>{escape(d.model_used or "?")}</code> at {_iso(d.created_at)}</p>
-""" for d in entry.definitions) or '<p class="muted">(no definitions recorded)</p>'
+"""
+
+        sections = []
+        for cid in ordered_cids:
+            if cid is None:
+                head = '<span class="badge untagged">untagged</span>'
+                desc = '<span class="ctxdesc muted">no context frame assigned</span>'
+            elif cid in contexts_by_id:
+                ctx = contexts_by_id[cid]
+                head = f'<span class="badge frame">{escape(ctx.name)}</span>'
+                desc = f'<span class="ctxdesc">{escape(ctx.description)}</span>'
+            else:
+                head = f'<span class="badge frame">{escape(cid)}</span>'
+                desc = '<span class="ctxdesc muted">(context record missing)</span>'
+            bodies = "".join(_def_block(d) for d in groups[cid])
+            sections.append(
+                f'<div class="ctxgroup"><div class="ctxhead">{head}{desc}</div>{bodies}</div>'
+            )
+        defs_html = "".join(sections) or '<p class="muted">(no definitions recorded)</p>'
+
+        distinct_frames = [c for c in groups if c is not None]
+        polysemy_html = (
+            '<p class="polysemy">This term holds definitions in '
+            f'{len(distinct_frames)} co-equal frames — neither overrides the '
+            'other; each speaks within its own context.</p>'
+            if len(distinct_frames) > 1 else ""
+        )
 
         aliases = ", ".join(f"<em>{escape(a)}</em>" for a in entry.aliases) or '<span class="muted">—</span>'
         children_html = ", ".join(
@@ -263,6 +310,7 @@ def _register_routes(app: FastAPI) -> None:
 <tr><th>Updated</th><td>{_iso(entry.updated_at)}</td></tr>
 </table>
 <h2>Definitions</h2>
+{polysemy_html}
 {defs_html}
 """
         return _base(f"{entry.mpl_label}", body, config.mongo.database)

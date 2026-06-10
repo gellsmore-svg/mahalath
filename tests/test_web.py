@@ -17,9 +17,10 @@ from fastapi.testclient import TestClient
 
 from mahalath.actions import ProposeParent, dispatch
 from mahalath.config import AppConfig, MongoConfig
-from mahalath.db.models import DefinitionVersion, OntologyEntry
+from mahalath.db.models import DefinitionContext, DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
     ActionProposalRepository,
+    DefinitionContextRepository,
     OntologyEntryRepository,
 )
 from mahalath.web.app import create_app
@@ -77,6 +78,47 @@ def test_ontology_detail_shows_definition(app_client, mongo_db) -> None:
 def test_ontology_detail_404_on_missing(app_client) -> None:
     r = app_client.get("/ontology/MPL-DOES-NOT-EXIST")
     assert r.status_code == 404
+
+
+def test_ontology_detail_groups_definitions_by_context(app_client, mongo_db) -> None:
+    ctx_repo = DefinitionContextRepository(mongo_db)
+    ctx_st = DefinitionContext(name="structural", description="Generic structural frame.")
+    ctx_th = DefinitionContext(name="theological", description="Biblical creation frame.")
+    ctx_repo.insert(ctx_st)
+    ctx_repo.insert(ctx_th)
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-004", canonical_term="substrate", confidence=8.0,
+        definitions=[
+            DefinitionVersion(text="The generic underlying medium.",
+                              model_used="gemma4:e2b", context_id=ctx_st.context_id),
+            DefinitionVersion(text="The grammatical mechanism of creaturely existence.",
+                              model_used="operator", context_id=ctx_th.context_id),
+        ],
+    ))
+    r = app_client.get("/ontology/MPL-004")
+    assert r.status_code == 200
+    body = r.text
+    # Both frame badges + descriptions present, both definitions present.
+    assert "structural" in body and "theological" in body
+    assert "Generic structural frame." in body
+    assert "Biblical creation frame." in body
+    assert "generic underlying medium" in body
+    assert "grammatical mechanism of creaturely existence" in body
+    # Polysemy note appears for a multi-frame term.
+    assert "co-equal frames" in body
+
+
+def test_ontology_detail_badges_untagged_definition(app_client, mongo_db) -> None:
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="alpha", confidence=8.0,
+        definitions=[DefinitionVersion(text="An untagged definition.", model_used="operator")],
+    ))
+    r = app_client.get("/ontology/MPL-001")
+    assert r.status_code == 200
+    assert "untagged" in r.text
+    assert "An untagged definition." in r.text
+    # Single frame (none) → no polysemy note.
+    assert "co-equal frames" not in r.text
 
 
 def test_proposals_list_filter_by_status(app_client, mongo_db) -> None:
