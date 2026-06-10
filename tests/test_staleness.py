@@ -503,3 +503,135 @@ def test_append_operator_definition_updates_refs_and_cascades(mongo_db) -> None:
     assert stored_002.is_stale is True
     assert stored_002.stale_reasons[0]["upstream_label"] == "MPL-001"
     assert stored_002.stale_reasons[0]["change_type"] == "definition_updated"
+
+
+# --- Definition-context backfill ------------------------------------------
+
+
+def _seed_contexts(mongo_db, *specs) -> dict[str, str]:
+    """Insert DefinitionContexts; return {name: context_id}."""
+    from mahalath.db.models import DefinitionContext
+    from mahalath.db.repositories import DefinitionContextRepository
+
+    repo = DefinitionContextRepository(mongo_db)
+    ids: dict[str, str] = {}
+    for name, description in specs:
+        ctx = DefinitionContext(name=name, description=description)
+        repo.insert(ctx)
+        ids[name] = ctx.context_id
+    return ids
+
+
+def test_backfill_contexts_dry_run_proposes_without_writing(mongo_config, mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    _seed_contexts(
+        mongo_db,
+        ("theological", "Definitions in the corpus's biblical framing."),
+        ("structural", "Definitions in the generic structural framing."),
+    )
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["an untagged definition"])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["another untagged definition"])
+
+    verdict = json.dumps({"context_name": "theological", "rationale": "fits"})
+    adapter = MockAdapter(default_response=verdict)
+
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, max_items=50, apply=False,
+    )
+
+    assert result.untagged_at_start == 2
+    assert result.proposals_generated == 2
+    assert result.applied == 0
+    assert all(p.source == "model" for p in result.proposals)
+    assert all(p.proposed_context_name == "theological" for p in result.proposals)
+    # Nothing written to disk in dry-run.
+    for label in ("MPL-001", "MPL-002"):
+        stored = OntologyEntryRepository(mongo_db).get(label)
+        assert stored.definitions[0].context_id is None
+
+
+def test_backfill_contexts_apply_writes_context_id(mongo_config, mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    ids = _seed_contexts(
+        mongo_db,
+        ("theological", "Definitions in the corpus's biblical framing."),
+    )
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["an untagged definition"])
+
+    verdict = json.dumps({"context_name": "theological", "rationale": "fits"})
+    adapter = MockAdapter(default_response=verdict)
+
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, max_items=50, apply=True,
+    )
+
+    assert result.applied == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.definitions[0].context_id == ids["theological"]
+
+
+def test_backfill_contexts_keyword_fallback_on_null_verdict(mongo_config, mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    _seed_contexts(
+        mongo_db,
+        ("physical", "Vorton knot configuration within the substrate medium."),
+        ("theological", "Biblical scriptural creaturely framing of meaning."),
+    )
+    _seed(mongo_db, "MPL-001", "vorton",
+          definitions=["A vorton is a knot configuration within the substrate."])
+
+    # Model declines to choose; fallback should match on token overlap.
+    adapter = MockAdapter(default_response=json.dumps({"context_name": None}))
+
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, max_items=50, apply=True,
+    )
+
+    assert result.proposals_generated == 1
+    assert result.proposals[0].source == "keyword_fallback"
+    assert result.proposals[0].proposed_context_name == "physical"
+    assert result.applied == 1
+
+
+def test_backfill_contexts_respects_max_items(mongo_config, mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    _seed_contexts(mongo_db, ("general", "Default frame."))
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["untagged one"])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["untagged two"])
+    _seed(mongo_db, "MPL-003", "gamma", definitions=["untagged three"])
+
+    adapter = MockAdapter(default_response=json.dumps({"context_name": "general"}))
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, max_items=2, apply=False,
+    )
+
+    assert result.untagged_at_start == 3
+    assert result.proposals_generated == 2
+
+
+def test_backfill_contexts_noop_when_no_contexts_defined(mongo_config, mongo_db) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["untagged"])
+    adapter = MockAdapter(default_response="ok")
+
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, max_items=50, apply=False,
+    )
+
+    assert result.untagged_at_start == 0
+    assert result.proposals_generated == 0
+    assert adapter.calls == []

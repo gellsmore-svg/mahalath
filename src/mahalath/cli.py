@@ -176,6 +176,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     show_context_parser.add_argument("identifier")
 
+    backfill_contexts_parser = subcommands.add_parser(
+        "backfill-contexts",
+        help="Walk untagged definitions and ask the model to propose a "
+        "context for each. Defaults to dry-run; pass --apply to write.",
+    )
+    backfill_contexts_parser.add_argument(
+        "--max-items", type=int, default=50,
+        help="Maximum definitions to process this run (default 50).",
+    )
+    backfill_contexts_parser.add_argument(
+        "--apply", action="store_true",
+        help="Actually write the context_ids (otherwise dry-run + print).",
+    )
+    backfill_contexts_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter (default: runtime.model_adapter; ollama_cli for local).",
+    )
+    backfill_contexts_parser.add_argument(
+        "--model", default=None,
+        help="Override adapter default model.",
+    )
+
     subcommands.add_parser(
         "list-stale",
         help="List ontology entries flagged as stale (upstream changed).",
@@ -373,6 +395,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "show-context":
         return _show_context(config, identifier=args.identifier)
+
+    if args.command == "backfill-contexts":
+        return _backfill_contexts(
+            config,
+            max_items=args.max_items,
+            apply_flag=args.apply,
+            adapter_name=args.adapter,
+            model_override=args.model,
+        )
 
     if args.command == "list-stale":
         return _list_stale(config)
@@ -1126,6 +1157,75 @@ def _show_context(config: AppConfig, *, identifier: str) -> int:
         return 0
     finally:
         close_all()
+
+
+def _backfill_contexts(
+    config: AppConfig,
+    *,
+    max_items: int,
+    apply_flag: bool,
+    adapter_name: str | None,
+    model_override: str | None,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, get_database
+    from mahalath.staleness import backfill_definition_contexts
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    try:
+        db = get_database(config)
+        result = backfill_definition_contexts(
+            config, db, adapter,
+            max_items=max_items, apply=apply_flag,
+        )
+        if apply_flag and result.applied > 0:
+            from mahalath.glossary import refresh_glossary
+            refresh_glossary(config, db)
+    finally:
+        close_all()
+
+    payload = {
+        "ok": True,
+        "dry_run": not apply_flag,
+        "adapter": effective_adapter,
+        "model": getattr(adapter, "default_model", None),
+        "untagged_at_start": result.untagged_at_start,
+        "proposals_generated": result.proposals_generated,
+        "applied": result.applied,
+        "skipped": result.skipped,
+        "errored": result.errored,
+        "proposals": [
+            {
+                "mpl_label": p.mpl_label,
+                "canonical_term": p.canonical_term,
+                "definition_index": p.definition_index,
+                "definition_model_used": p.definition_model_used,
+                "definition_text_preview": p.definition_text[:140],
+                "proposed_context_name": p.proposed_context_name,
+                "source": p.source,
+            }
+            for p in result.proposals
+        ],
+        "errors": result.errors,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _list_stale(config: AppConfig) -> int:
