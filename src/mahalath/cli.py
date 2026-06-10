@@ -100,6 +100,12 @@ def main(argv: list[str] | None = None) -> int:
             "no direction-variance protection)."
         ),
     )
+    process_doc.add_argument(
+        "--no-context-backfill",
+        action="store_true",
+        help="Skip the post-persist pass that context-tags any definition "
+        "the debate left untagged (only runs if contexts are defined).",
+    )
 
     process_input_parser = subcommands.add_parser(
         "process-input",
@@ -122,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="Override hierarchy_consensus_passes for this run.",
+    )
+    process_input_parser.add_argument(
+        "--no-context-backfill",
+        action="store_true",
+        help="Skip the post-persist context-tagging pass on each document.",
     )
     subcommands.add_parser(
         "list-ontology", help="List ontology entries."
@@ -341,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             max_terms=args.max_terms,
             skip_hierarchy_review=args.no_hierarchy_review,
             consensus_passes_override=args.consensus_passes,
+            skip_context_backfill=args.no_context_backfill,
         )
 
     if args.command == "list-ontology":
@@ -464,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             max_terms_per_doc=args.max_terms,
             skip_hierarchy_review=args.no_hierarchy_review,
             consensus_passes_override=args.consensus_passes,
+            skip_context_backfill=args.no_context_backfill,
         )
 
     if args.command == "debate-one":
@@ -528,6 +541,7 @@ def _process_document(
     max_terms: int,
     skip_hierarchy_review: bool = False,
     consensus_passes_override: int | None = None,
+    skip_context_backfill: bool = False,
 ) -> int:
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
@@ -556,6 +570,7 @@ def _process_document(
             skip_hierarchy_review=skip_hierarchy_review,
             consensus_passes_override=consensus_passes_override,
             style_overlay=style_overlay,
+            skip_context_backfill=skip_context_backfill,
         )
 
         if not result.get("ok"):
@@ -579,6 +594,7 @@ def _process_input(
     max_terms_per_doc: int,
     skip_hierarchy_review: bool = False,
     consensus_passes_override: int | None = None,
+    skip_context_backfill: bool = False,
 ) -> int:
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
@@ -645,6 +661,7 @@ def _process_input(
                 skip_hierarchy_review=skip_hierarchy_review,
                 consensus_passes_override=consensus_passes_override,
                 style_overlay=doc_overlay,
+                skip_context_backfill=skip_context_backfill,
             )
             # Avoid double-keying document_id / title.
             for k, v in pipeline_result.items():
@@ -683,6 +700,7 @@ def _run_pipeline_on_document(
     skip_hierarchy_review: bool,
     consensus_passes_override: int | None,
     style_overlay: str | None,
+    skip_context_backfill: bool = False,
 ) -> dict[str, Any]:
     """Run extract → debate → persist → hierarchy review on one document.
 
@@ -734,6 +752,7 @@ def _run_pipeline_on_document(
     ]
 
     debated: list[dict[str, Any]] = []
+    accepted_labels: set[str] = set()
     for candidate in candidates[:max_terms]:
         try:
             debate_result = run_debate(
@@ -766,6 +785,11 @@ def _run_pipeline_on_document(
             "decision_log_id": debate_result.decision_log_id,
         }
         if (
+            persist_result.outcome == "accepted"
+            and persist_result.mpl_label is not None
+        ):
+            accepted_labels.add(persist_result.mpl_label)
+        if (
             not skip_hierarchy_review
             and persist_result.outcome == "accepted"
             and persist_result.mpl_label is not None
@@ -786,6 +810,35 @@ def _run_pipeline_on_document(
         config, document.document_id, document.title, candidates, debated
     )
 
+    # Catch-up context tagging: the debate already proposes a context per
+    # definition, but the model sometimes returns null or a name that
+    # doesn't resolve. Scope the backfill to the entries this run touched
+    # so it stays bounded — it is not a whole-database sweep (that is the
+    # standalone `backfill-contexts` command's job).
+    context_backfill: dict[str, Any] | None = None
+    if not skip_context_backfill and accepted_labels:
+        from mahalath.staleness import backfill_definition_contexts
+        backfill = backfill_definition_contexts(
+            config, db, adapter,
+            max_items=len(accepted_labels) * 8 or 50,
+            apply=True,
+            only_labels=accepted_labels,
+        )
+        context_backfill = {
+            "applied": backfill.applied,
+            "skipped": backfill.skipped,
+            "errored": backfill.errored,
+            "proposals": [
+                {
+                    "mpl_label": p.mpl_label,
+                    "definition_index": p.definition_index,
+                    "context": p.proposed_context_name,
+                    "source": p.source,
+                }
+                for p in backfill.proposals
+            ],
+        }
+
     glossary_paths: dict[str, str] | None = None
     if any(d.get("outcome") == "accepted" for d in debated):
         from mahalath.glossary import refresh_glossary
@@ -802,6 +855,7 @@ def _run_pipeline_on_document(
         "debated": debated,
         "remaining_candidates": [c.term for c in candidates[max_terms:]],
         "activity_log_path": str(log_path),
+        "context_backfill": context_backfill,
         "glossary_refreshed": glossary_paths,
     }
 

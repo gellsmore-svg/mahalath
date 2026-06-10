@@ -635,3 +635,26 @@ def test_backfill_contexts_noop_when_no_contexts_defined(mongo_config, mongo_db)
     assert result.untagged_at_start == 0
     assert result.proposals_generated == 0
     assert adapter.calls == []
+
+
+def test_backfill_contexts_only_labels_scopes_the_scan(mongo_config, mongo_db) -> None:
+    """only_labels restricts the walk to the named entries (pipeline scoping)."""
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.staleness import backfill_definition_contexts
+
+    _seed_contexts(mongo_db, ("general", "Default frame."))
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["untagged one"])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["untagged two"])
+
+    adapter = MockAdapter(default_response=json.dumps({"context_name": "general"}))
+    result = backfill_definition_contexts(
+        mongo_config, mongo_db, adapter, apply=True, only_labels={"MPL-001"},
+    )
+
+    # Only MPL-001 was in scope, so only it counts as untagged + applied.
+    assert result.untagged_at_start == 1
+    assert result.applied == 1
+    assert [p.mpl_label for p in result.proposals] == ["MPL-001"]
+    # MPL-002 was never touched.
+    assert OntologyEntryRepository(mongo_db).get("MPL-002").definitions[0].context_id is None

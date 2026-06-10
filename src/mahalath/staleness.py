@@ -349,6 +349,7 @@ def backfill_definition_contexts(
     *,
     max_items: int = 50,
     apply: bool = False,
+    only_labels: set[str] | None = None,
 ) -> BackfillResult:
     """Walk untagged definitions, ask the model to pick a context, optionally apply.
 
@@ -356,6 +357,10 @@ def backfill_definition_contexts(
     proposals so the operator can review before writing. With
     apply=True, each proposed context_id is written to the matching
     definition slot on disk and a glossary refresh fires at the end.
+
+    `only_labels` restricts the scan to those MPL labels — used by the
+    process-document pipeline to context-tag just the entries it touched
+    this run, rather than sweeping the whole database.
     """
     from mahalath.db.repositories import DefinitionContextRepository, OntologyEntryRepository
 
@@ -372,6 +377,8 @@ def backfill_definition_contexts(
     # Collect untagged (entry, def_index) pairs in label order.
     untagged: list[tuple[str, int]] = []
     for label in sorted(entry_repo.all_labels()):
+        if only_labels is not None and label not in only_labels:
+            continue
         entry = entry_repo.get(label)
         if entry is None:
             continue
