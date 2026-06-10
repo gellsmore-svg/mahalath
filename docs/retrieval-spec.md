@@ -1,7 +1,7 @@
 # Mahalath Retrieval Layer — Design Spec
 
 Last updated: 2026-06-10
-Status: accepted design; not yet implemented (see "Phasing").
+Status: accepted design. S-A landed (S2.30); S-B..S-E pending.
 Related: ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023.
 
 ## Purpose
@@ -204,10 +204,13 @@ becomes one consumer of retrieval rather than a parallel implementation.
 
 ## Phasing (suggested slices)
 
-1. **S-A — `retrieval.py` core.** Shared ranker (extracted from
-   `chat.py`), `search_terms`, `get_codified`, `$text` index,
-   `mahalath retrieve` CLI. Smallest thing that lets an LLM query and get
-   codified refs back. No schema change yet (path/score deferred).
+1. **S-A — `retrieval.py` core. DONE (S2.30).** Shared `score_entry`
+   ranker (extracted from `chat.py`, which now calls it), `search_terms`
+   (substring + `$text` fuzzy, with branch/context/status/min-confidence
+   filters), `get_codified` (all frames, on-the-fly `path`, references +
+   reverse-references), the `$text` index, and `mahalath retrieve` CLI.
+   `path` computed by walking `parent_label` (denormalised field deferred
+   to S-B).
 2. **S-B — `path` field + backfill.** Add `OntologyEntry.path`,
    maintain on insert/reparent, one-shot `backfill-paths` migration,
    `subtree()`.
@@ -241,10 +244,9 @@ becomes one consumer of retrieval rather than a parallel implementation.
 - **Q4.** Does the operator want a stable *external* alias for an MPL
   label (a human-pronounceable handle) without violating ADR-021? If so
   it is an `alias`, not a new key.
-- **Q5.** Reference granularity for closure (ADR-023): `references_labels`
-  is currently aggregated at the *entry* level, not per definition/frame.
-  Entry-level closure may pull in a term referenced only by a frame the
-  caller discarded. Acceptable for v1 (over-inclusion is safe); a later
-  refinement is per-`DefinitionVersion` reference tracking so closure
-  follows only the frames actually kept. Lean: ship entry-level closure
-  first, add per-meaning references if over-inclusion proves noisy.
+- **Q5 — RESOLVED (2026-06-10).** Closure uses *entry-level*
+  `references_labels` for v1. Over-inclusion (pulling in a term
+  referenced only by a discarded frame) is safe and cheaper than
+  per-frame tracking. Per-`DefinitionVersion` reference tracking is a
+  later refinement, added only if over-inclusion proves noisy in
+  practice.

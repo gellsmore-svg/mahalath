@@ -41,13 +41,13 @@ from pymongo.database import Database
 from mahalath.adapters.base import Adapter, AdapterError
 from mahalath.db.models import OntologyEntry
 from mahalath.db.repositories import OntologyEntryRepository
+from mahalath.retrieval import score_entry
 
 
 log = logging.getLogger("mahalath.chat")
 
 
 _MPL_LABEL_PATTERN = re.compile(r"\bMPL-\d{3}(?:\.\d{3})*[a-z]?\b")
-_MIN_TERM_LEN = 4
 
 
 @dataclass
@@ -114,23 +114,7 @@ def select_context_entries(
         if entry is None:
             continue
 
-        score = 0
-        if entry.mpl_label.casefold() in question_cf:
-            score += 30
-
-        term_cf = entry.canonical_term.casefold() if entry.canonical_term else ""
-        if len(term_cf) >= _MIN_TERM_LEN and re.search(
-            r"\b" + re.escape(term_cf) + r"\b", question_cf
-        ):
-            score += 20
-
-        for alias in entry.aliases:
-            alias_cf = alias.casefold()
-            if len(alias_cf) >= _MIN_TERM_LEN and re.search(
-                r"\b" + re.escape(alias_cf) + r"\b", question_cf
-            ):
-                score += 15
-
+        score = score_entry(entry, question_cf)
         if score > 0:
             scored.append((score, entry))
             seen_labels.add(label)

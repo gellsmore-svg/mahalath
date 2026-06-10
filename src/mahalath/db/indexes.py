@@ -7,7 +7,7 @@ returns existing index names instead of duplicating.
 
 from __future__ import annotations
 
-from pymongo import ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, TEXT
 from pymongo.database import Database
 
 
@@ -29,6 +29,14 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.ontology_entries.create_index("references_labels"),  # for reverse lookups
         db.ontology_entries.create_index("is_stale"),
         db.ontology_entries.create_index([("updated_at", DESCENDING)]),
+        # Fuzzy term search for the retrieval layer (S-A). Weighted so a
+        # canonical-term hit outranks an alias hit, which outranks a hit
+        # buried in a definition body. One text index per collection.
+        db.ontology_entries.create_index(
+            [("canonical_term", TEXT), ("aliases", TEXT), ("definitions.text", TEXT)],
+            weights={"canonical_term": 10, "aliases": 5, "definitions.text": 1},
+            name="ontology_text",
+        ),
     ]
 
     created["ontology_tree"] = [

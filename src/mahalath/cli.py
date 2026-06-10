@@ -134,6 +134,38 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the post-persist context-tagging pass on each document.",
     )
+    retrieve_parser = subcommands.add_parser(
+        "retrieve",
+        help="Resolve human term(s) to codified MPL references and print "
+        "their full meaning (all frames). For LLM-driven retrieval.",
+    )
+    retrieve_parser.add_argument(
+        "terms", nargs="+", help="One or more human terms/phrases to resolve.",
+    )
+    retrieve_parser.add_argument(
+        "--limit", type=int, default=10,
+        help="Max matches to return (default 10).",
+    )
+    retrieve_parser.add_argument(
+        "--branch", default=None,
+        help="Restrict to entries under this ancestor MPL label.",
+    )
+    retrieve_parser.add_argument(
+        "--context", default=None,
+        help="Restrict to entries carrying a definition in this frame.",
+    )
+    retrieve_parser.add_argument(
+        "--status", default=None, help="Restrict to entries with this status.",
+    )
+    retrieve_parser.add_argument(
+        "--min-confidence", type=float, default=None,
+        help="Restrict to entries at or above this confidence.",
+    )
+    retrieve_parser.add_argument(
+        "--matches-only", action="store_true",
+        help="Print ranked matches without expanding each to its codified ref.",
+    )
+
     subcommands.add_parser(
         "list-ontology", help="List ontology entries."
     )
@@ -357,6 +389,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list-ontology":
         return _list_ontology(config)
+
+    if args.command == "retrieve":
+        return _retrieve(
+            config,
+            terms=args.terms,
+            limit=args.limit,
+            branch=args.branch,
+            context=args.context,
+            status=args.status,
+            min_confidence=args.min_confidence,
+            matches_only=args.matches_only,
+        )
 
     if args.command == "list-proposals":
         return _list_proposals(config, status=args.status)
@@ -1526,6 +1570,53 @@ def _export_glossary(
                 "entry_count": result.entry_count,
                 "written_to": str(result.written_to),
             }, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _retrieve(
+    config: AppConfig,
+    *,
+    terms: list[str],
+    limit: int,
+    branch: str | None,
+    context: str | None,
+    status: str | None,
+    min_confidence: float | None,
+    matches_only: bool,
+) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.retrieval import Filters, get_codified, search_terms
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)  # makes sure the $text index exists
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        filters = Filters(
+            branch=branch,
+            context_name=context,
+            status=status,
+            min_confidence=min_confidence,
+        )
+        matches = search_terms(db, terms, filters=filters, limit=limit)
+        payload: dict[str, Any] = {
+            "ok": True,
+            "terms": terms,
+            "match_count": len(matches),
+            "matches": [m.to_dict() for m in matches],
+        }
+        if not matches_only:
+            payload["codified"] = [
+                ref.to_dict()
+                for ref in (get_codified(db, m.mpl_label) for m in matches)
+                if ref is not None
+            ]
+        print(json.dumps(payload, indent=2))
         return 0
     finally:
         close_all()
