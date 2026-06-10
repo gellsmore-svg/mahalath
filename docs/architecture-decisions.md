@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-Last updated: 2026-06-06
+Last updated: 2026-06-10
 
 ADRs are append-only. If a decision is reversed, add a new ADR rather
 than editing the old one, and note the supersession in both entries.
@@ -28,6 +28,8 @@ than editing the old one, and note the supersession in both entries.
 | ADR-015 | Source material is preserved verbatim. | Mahalath analyses source documents to extract candidate terms; it does not rewrite, summarise, or compress source. Matches Mnemosyne's source-preservation discipline and §3.3 of the requirements. |
 | ADR-016 | Reject duplicate source files by SHA-256 checksum at ingest time. | Same content-based duplicate rejection Mnemosyne uses (its ADR-016). Avoids re-processing the same source under a different filename. |
 | ADR-017 | Logical separation between Mahalath and Mnemosyne MongoDB databases. | Default database name `mahalath_dev` (configurable). Same Mongo instance; different database. Avoids any collection-name collision and lets each project evolve schemas independently. |
+| ADR-020 | The retrieval layer reuses the existing schema; no parallel "retrieval node" document. | An external proposal suggested a second node shape (`codified_label`, `parent_id`, `path`, `meanings`, `variants`, opaque `mah_term_*` ids). That duplicates `ontology_entries` + `definitions` + `ontology_tree` + `definition_contexts`, which already carry every field it names. A second schema means a breaking migration and two sources of truth. Decision: retrieval is a *read view* over the current collections. The only additive schema changes permitted for retrieval are (a) a denormalised `path` (ancestor MPL labels) on `ontology_entries`, maintained on insert/reparent, and (b) an optional per-definition consensus score on `DefinitionVersion`. See `docs/retrieval-spec.md`. |
+| ADR-021 | Codified labels stay opaque; retrieval never bakes semantics into the key. | The proposal's `MAH_BANK_FIN_20250610_V3` encodes domain + date + version *in the identifier*. That contradicts ADR-019 (labels are approximate interfaces, not the ontology) and ADR-018 (labels are immutable): a label that names its domain/version becomes wrong the moment a term is re-framed or re-versioned. Decision: the codified reference an LLM retrieves and cites is the MPL label (optionally the `(MPL, context_id)` pair for a specific frame). Domain lives in the tree `path` and `references_labels`; version lives in `definitions[].` order/timestamps; frame lives in `context_id`. Retrieval surfaces these as *fields* alongside the opaque label, never inside it. |
 
 ## Open Or Pending Decisions
 
