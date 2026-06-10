@@ -192,6 +192,19 @@ def run_debate(
 
 # --- Prompt builders ---------------------------------------------------------
 
+_INTENT_VALENCE_GUIDANCE = (
+    "\n"
+    "Per the corpus, also attend to two qualities as you write — let them "
+    "surface in the prose, do NOT name them as fields:\n"
+    "  - Semantic intent — why is this concept being invoked by the source? "
+    "(persuade, teach, accuse, restore, explain, challenge, align…)\n"
+    "  - Semantic valence — how does the source position the concept? "
+    "(affirmation, uncertainty, critique, reverence, caution, neutrality…)\n"
+    "A definition that captures only what something IS, but not why the "
+    "corpus deploys it or how the corpus positions it, has lost something "
+    "load-bearing."
+)
+
 _CRITIC_PREAMBLE = (
     f"{SPEAKER_TAG_PRECISION_CRITIC}\n"
     "You are the PrecisionCritic in a glossary debate. Your role is to "
@@ -199,6 +212,7 @@ _CRITIC_PREAMBLE = (
     "from neighboring concepts, no hidden ambiguity. Be conservative "
     "with confidence; only score 8.0 or higher if you would defend the "
     "definition against a domain expert."
+    + _INTENT_VALENCE_GUIDANCE
 )
 
 _EXPLORER_PREAMBLE = (
@@ -208,6 +222,7 @@ _EXPLORER_PREAMBLE = (
     "and where useful broaden its framing (related concepts, scope, "
     "applications). Aim for a definition that is both precise AND "
     "captures the meaningful breadth of the concept."
+    + _INTENT_VALENCE_GUIDANCE
 )
 
 _OUTPUT_CONTRACT_CRITIC = (

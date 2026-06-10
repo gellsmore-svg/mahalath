@@ -318,6 +318,212 @@ def append_operator_definition(
     )
 
 
+@dataclass(frozen=True)
+class BackfillProposal:
+    """One proposed (mpl_label, definition_index, context_name) triple."""
+
+    mpl_label: str
+    canonical_term: str
+    definition_index: int          # position in entry.definitions
+    definition_model_used: str | None
+    definition_text: str
+    proposed_context_name: str | None
+    source: str                    # "model" | "keyword_fallback" | "skipped"
+
+
+@dataclass
+class BackfillResult:
+    untagged_at_start: int = 0
+    proposals_generated: int = 0
+    applied: int = 0
+    skipped: int = 0
+    errored: int = 0
+    proposals: list[BackfillProposal] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def backfill_definition_contexts(
+    config: AppConfig,
+    db: Database,
+    adapter: Adapter,
+    *,
+    max_items: int = 50,
+    apply: bool = False,
+) -> BackfillResult:
+    """Walk untagged definitions, ask the model to pick a context, optionally apply.
+
+    The default is dry-run (apply=False) — the result includes the
+    proposals so the operator can review before writing. With
+    apply=True, each proposed context_id is written to the matching
+    definition slot on disk and a glossary refresh fires at the end.
+    """
+    from mahalath.db.repositories import DefinitionContextRepository, OntologyEntryRepository
+
+    entry_repo = OntologyEntryRepository(db)
+    ctx_repo = DefinitionContextRepository(db)
+    available_contexts = [
+        {"name": c.name, "description": c.description} for c in ctx_repo.all()
+    ]
+    contexts_by_name = {c.name: c for c in ctx_repo.all()}
+    if not available_contexts:
+        # Nothing to tag against.
+        return BackfillResult()
+
+    # Collect untagged (entry, def_index) pairs in label order.
+    untagged: list[tuple[str, int]] = []
+    for label in sorted(entry_repo.all_labels()):
+        entry = entry_repo.get(label)
+        if entry is None:
+            continue
+        for i, d in enumerate(entry.definitions):
+            if not d.context_id:
+                untagged.append((label, i))
+
+    result = BackfillResult(untagged_at_start=len(untagged))
+
+    for label, idx in untagged[:max_items]:
+        entry = entry_repo.get(label)
+        if entry is None or idx >= len(entry.definitions):
+            continue
+        definition = entry.definitions[idx]
+
+        try:
+            chosen_name, source = _backfill_one(
+                entry, definition, available_contexts, adapter,
+            )
+        except AdapterError as exc:
+            result.errored += 1
+            result.errors.append(f"{label}#{idx}: {exc}")
+            continue
+        except Exception as exc:
+            result.errored += 1
+            result.errors.append(f"{label}#{idx}: {exc}")
+            continue
+
+        proposal = BackfillProposal(
+            mpl_label=label,
+            canonical_term=entry.canonical_term,
+            definition_index=idx,
+            definition_model_used=definition.model_used,
+            definition_text=definition.text,
+            proposed_context_name=chosen_name,
+            source=source,
+        )
+        result.proposals.append(proposal)
+        result.proposals_generated += 1
+
+        if not chosen_name:
+            result.skipped += 1
+            continue
+
+        ctx = contexts_by_name.get(chosen_name)
+        if ctx is None:
+            result.skipped += 1
+            continue
+
+        if apply:
+            # Update the specific definition slot in place. Pull the
+            # whole array, mutate, write back — Mongo doesn't have a
+            # safe positional update on text-matched array elements.
+            db.ontology_entries.update_one(
+                {"_id": label},
+                {"$set": {
+                    f"definitions.{idx}.context_id": ctx.context_id,
+                    "updated_at": _utcnow(),
+                }},
+            )
+            result.applied += 1
+            log.info(
+                "backfill: tagged %s#%d (%s) with context %s",
+                label, idx, definition.model_used, chosen_name,
+            )
+
+    return result
+
+
+def _backfill_one(
+    entry: OntologyEntry,
+    definition,
+    available_contexts: list[dict],
+    adapter: Adapter,
+) -> tuple[str | None, str]:
+    """Ask the adapter for the context, fall back to keyword overlap on null."""
+    prompt = build_backfill_prompt(entry, definition, available_contexts)
+    response = adapter.generate(prompt, want_json=True)
+    chosen = _parse_backfill_verdict(response.text)
+    if chosen:
+        return chosen, "model"
+    fallback = _infer_context_name(definition.text, available_contexts)
+    if fallback:
+        return fallback, "keyword_fallback"
+    return None, "skipped"
+
+
+def build_backfill_prompt(
+    entry: OntologyEntry, definition, available_contexts: list[dict]
+) -> str:
+    parts = [
+        "You are tagging an existing ontology definition with the context "
+        "(frame) it speaks within.",
+        "",
+        f"ENTRY: {entry.mpl_label} {entry.canonical_term!r}",
+        f"  Parent: {entry.parent_label or '(top-level)'}",
+        "",
+        "DEFINITION TO TAG",
+        f"  Author: {definition.model_used or '?'}",
+        f"  Text:   {definition.text}",
+        "",
+        "AVAILABLE CONTEXTS",
+    ]
+    for c in available_contexts:
+        parts.append(f"  - {c.get('name')}: {c.get('description', '')}")
+    names = " | ".join(c.get("name", "?") for c in available_contexts)
+    parts.append("")
+    parts.append(
+        f"REQUIRED: pick exactly one of [{names}]. Use null ONLY if the "
+        "definition truly fits none of them."
+    )
+    parts.append("")
+    parts.append(
+        'Output ONLY a JSON object: '
+        f'{{"context_name": "<one of: {names}>", '
+        '"rationale": "<one sentence on why this context fits>"}}'
+    )
+    return "\n".join(parts)
+
+
+def _parse_backfill_verdict(text: str) -> str | None:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        parts = cleaned.split("```", 2)
+        if len(parts) >= 2:
+            inner = parts[1]
+            if inner.startswith("json"):
+                inner = inner[4:].lstrip()
+            cleaned = inner
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end < 0:
+            return None
+        try:
+            obj = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(obj, dict):
+        return None
+    raw = obj.get("context_name")
+    if isinstance(raw, str):
+        cleaned_name = raw.strip().strip("'\"")
+        if cleaned_name and cleaned_name.lower() not in {
+            "null", "none", "unspecified", ""
+        }:
+            return cleaned_name
+    return None
+
+
 def backfill_references(db: Database) -> dict[str, int]:
     """Recompute references_labels for every entry in the database.
 
@@ -705,6 +911,15 @@ def build_redefine_prompt(
         "entry that accurately captures its meaning given the CURRENT "
         "upstream state. Do NOT propose a new label, parent, or canonical "
         "term — only the definition text."
+    )
+    parts.append("")
+    parts.append(
+        "Per the corpus, also attend to two qualities as you write — let "
+        "them surface in the prose, do NOT name them as fields:\n"
+        "  - Semantic intent — why is this concept being invoked by the "
+        "source? (persuade, teach, accuse, restore, explain, challenge…)\n"
+        "  - Semantic valence — how does the source position the concept? "
+        "(affirmation, uncertainty, critique, reverence, caution, neutrality…)"
     )
     parts.append("")
     if available_contexts:
