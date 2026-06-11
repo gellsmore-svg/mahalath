@@ -45,6 +45,20 @@ _MIN_TERM_LEN = 4
 _MPL_REF = re.compile(r"^(?P<label>MPL-\d{3}(?:\.\d{3})*[a-z]?)(?:#(?P<ctx>.+))?$")
 
 
+def _label_mentioned(label_cf: str, query_cf: str) -> bool:
+    """True if the exact MPL label appears in `query_cf` as a whole token.
+
+    Plain substring matching over-matches the label grammar: `MPL-001`
+    is a prefix of both `MPL-001.001` (child) and `MPL-001a` (variant),
+    and `\\b` alone doesn't help because `.` is itself a word boundary.
+    So reject a match that continues with `.<digit>` (a child segment)
+    or an alphanumeric (a variant suffix / longer number).
+    """
+    return re.search(
+        r"\b" + re.escape(label_cf) + r"(?!\.\d)(?![a-z0-9])", query_cf
+    ) is not None
+
+
 # --- Shared relevance scorer ----------------------------------------------
 
 
@@ -54,12 +68,13 @@ def score_entry(entry: OntologyEntry, query_cf: str) -> int:
     The shared ranking core used by both `chat.select_context_entries`
     and `search_terms`:
 
-        +30 a direct MPL-label mention
+        +30 a direct MPL-label mention (whole token — `MPL-001` does
+            not match inside `MPL-001.001` or `MPL-001a`)
         +20 a canonical_term word-boundary match (>= 4 chars)
         +15 any alias word-boundary match (>= 4 chars)
     """
     score = 0
-    if entry.mpl_label.casefold() in query_cf:
+    if _label_mentioned(entry.mpl_label.casefold(), query_cf):
         score += 30
     term_cf = entry.canonical_term.casefold() if entry.canonical_term else ""
     if len(term_cf) >= _MIN_TERM_LEN and re.search(
@@ -338,46 +353,81 @@ class SubtreeSummary:
 def subtree(db: Database, label: str, *, depth: int = 1) -> SubtreeSummary | None:
     """Limited-depth descendant summary rooted at `label` (operator FR-5).
 
-    Walks the denormalised `parent_label` breadth-first to `depth`
-    levels (depth=1 → direct children). Cycle-safe via a visited set.
-    Returns None for an unknown root.
+    Fast path: one multikey query on the materialised `path` field
+    (`{"path": label}` matches every descendant); a node's depth is its
+    position past `label` in its own path. Falls back to a per-level
+    `parent_label` walk when the database still has un-backfilled legacy
+    paths (an entry with a parent but an empty path), so results stay
+    correct pre-migration. Returns None for an unknown root.
     """
     repo = OntologyEntryRepository(db)
     if repo.get(label) is None:
         return None
     ctx_by_id = {c.context_id: c.name for c in DefinitionContextRepository(db).all()}
 
+    if _has_unmaterialised_paths(db):
+        found = _subtree_walk(repo, label, depth)
+    else:
+        found = []
+        for doc in db.ontology_entries.find({"path": label}):
+            entry = OntologyEntry.model_validate(doc)
+            node_depth = len(entry.path) - entry.path.index(label)
+            if node_depth <= depth:
+                found.append((node_depth, entry))
+
+    found.sort(key=lambda pair: (pair[0], pair[1].mpl_label))
     nodes: list[SubtreeNode] = []
+    for node_depth, entry in found:
+        frames = sorted({
+            name
+            for d in entry.definitions
+            if d.context_id
+            for name in [ctx_by_id.get(d.context_id, d.context_id)]
+            if name
+        })
+        nodes.append(SubtreeNode(
+            mpl_label=entry.mpl_label,
+            canonical_term=entry.canonical_term,
+            depth=node_depth,
+            parent_label=entry.parent_label,
+            frames=frames,
+            is_stale=entry.is_stale,
+        ))
+
+    return SubtreeSummary(root=label, depth=depth, nodes=nodes, count=len(nodes))
+
+
+def _has_unmaterialised_paths(db: Database) -> bool:
+    """True if any entry has a parent but no stored path (pre-migration)."""
+    return db.ontology_entries.count_documents(
+        {
+            "parent_label": {"$ne": None},
+            "$or": [{"path": {"$size": 0}}, {"path": {"$exists": False}}],
+        },
+        limit=1,
+    ) > 0
+
+
+def _subtree_walk(
+    repo: OntologyEntryRepository, label: str, depth: int
+) -> list[tuple[int, OntologyEntry]]:
+    """Legacy per-level `parent_label` walk (cycle-safe via visited set)."""
+    found: list[tuple[int, OntologyEntry]] = []
     seen: set[str] = {label}
     frontier = [label]
     for level in range(1, depth + 1):
         next_frontier: list[str] = []
         for parent in frontier:
-            for child_label in sorted(repo.labels_under_parent(parent)):
+            for child_label in repo.labels_under_parent(parent):
                 if child_label in seen:
                     continue
                 seen.add(child_label)
                 child = repo.get(child_label)
                 if child is None:
                     continue
-                frames = sorted({
-                    name
-                    for d in child.definitions
-                    if d.context_id
-                    for name in [ctx_by_id.get(d.context_id, d.context_id)]
-                    if name
-                })
-                nodes.append(SubtreeNode(
-                    mpl_label=child.mpl_label,
-                    canonical_term=child.canonical_term,
-                    depth=level,
-                    parent_label=child.parent_label,
-                    frames=frames,
-                    is_stale=child.is_stale,
-                ))
+                found.append((level, child))
                 next_frontier.append(child_label)
         frontier = next_frontier
         if not frontier:
             break
-
-    return SubtreeSummary(root=label, depth=depth, nodes=nodes, count=len(nodes))
+    return found

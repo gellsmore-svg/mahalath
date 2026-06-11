@@ -27,6 +27,9 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.ontology_entries.create_index("canonical_term"),
         db.ontology_entries.create_index("status"),
         db.ontology_entries.create_index("references_labels"),  # for reverse lookups
+        # Multikey index on the materialised ancestor chain (S-B):
+        # `{"path": label}` fetches a whole subtree in one query.
+        db.ontology_entries.create_index("path"),
         db.ontology_entries.create_index("is_stale"),
         db.ontology_entries.create_index([("updated_at", DESCENDING)]),
         # Fuzzy term search for the retrieval layer (S-A). Weighted so a

@@ -214,3 +214,48 @@ def test_subtree_depth_two(mongo_db) -> None:
 
 def test_subtree_unknown_label_is_none(mongo_db) -> None:
     assert subtree(mongo_db, "MPL-999", depth=1) is None
+
+
+def test_subtree_falls_back_on_unmaterialised_paths(mongo_db) -> None:
+    # Legacy DB shape: parents set, paths never backfilled. The path-query
+    # fast path would return nothing; subtree must detect this and walk.
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(_entry("MPL-001", path=[]))
+    repo.insert(_entry("MPL-001.001", parent="MPL-001", path=[]))
+    repo.insert(_entry(
+        "MPL-001.001.001", parent="MPL-001.001", path=[]
+    ))
+    summary = subtree(mongo_db, "MPL-001", depth=2)
+    by_label = {n.mpl_label: n for n in summary.nodes}
+    assert summary.count == 2
+    assert by_label["MPL-001.001"].depth == 1
+    assert by_label["MPL-001.001.001"].depth == 2
+
+
+def test_persist_retro_links_older_entries(mongo_db) -> None:
+    # An older entry mentions "vorton" before any vorton entry exists;
+    # when the debate lands the new entry, the old entry's references
+    # must pick it up without waiting for a manual backfill.
+    from mahalath.config import RuntimeConfig
+    from mahalath.debate import DebateResult
+    from mahalath.ontology import persist_debate_result
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="weave", confidence=8.0,
+        definitions=[DefinitionVersion(
+            text="A weave is a braid of vorton threads.", model_used="op"
+        )],
+    ))
+
+    result = DebateResult(
+        decision_log_id="dl-2",
+        term="vorton",
+        source_document_id="doc-1",
+        outcome="accepted",
+        final_definition="A stable topological knot.",
+        final_confidence=8.5,
+        iterations_used=1,
+    )
+    out = persist_debate_result(result, mongo_db, RuntimeConfig())
+    assert repo.get("MPL-001").references_labels == [out.mpl_label]

@@ -31,6 +31,7 @@ from pymongo.database import Database
 
 from mahalath.db.models import OntologyEntry
 from mahalath.db.repositories import (
+    DefinitionContextRepository,
     OntologyEntryRepository,
     OntologyTreeRepository,
 )
@@ -61,7 +62,7 @@ def export_markdown(
     database_name: str = "mahalath",
 ) -> ExportResult:
     entries = _gather_entries(db)
-    body = _render_markdown(entries, database_name)
+    body = _render_markdown(entries, database_name, _context_names(db))
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(body, encoding="utf-8")
@@ -123,7 +124,7 @@ def export_json(
     database_name: str = "mahalath",
 ) -> ExportResult:
     entries = _gather_entries(db)
-    payload = _build_json_payload(entries, database_name)
+    payload = _build_json_payload(entries, database_name, _context_names(db))
     body = json.dumps(payload, indent=2, default=_json_default)
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +138,13 @@ def export_json(
 
 
 # --- Gathering -------------------------------------------------------------
+
+
+def _context_names(db: Database) -> dict[str, str]:
+    """{context_id → readable frame name} for definition grouping."""
+    return {
+        c.context_id: c.name for c in DefinitionContextRepository(db).all()
+    }
 
 
 def _gather_entries(db: Database) -> list[_EntryWithChildren]:
@@ -156,7 +164,9 @@ def _gather_entries(db: Database) -> list[_EntryWithChildren]:
 
 
 def _render_markdown(
-    entries: list[_EntryWithChildren], database_name: str
+    entries: list[_EntryWithChildren],
+    database_name: str,
+    ctx_names: dict[str, str],
 ) -> str:
     generated_at = datetime.now(timezone.utc).isoformat()
     n = len(entries)
@@ -195,19 +205,33 @@ def _render_markdown(
         lines.append("")
 
         if e.definitions:
-            for definition in e.definitions:
-                lines.append(f"> {definition.text}")
-                attribution_parts = []
-                if definition.model_used:
-                    attribution_parts.append(f"from `{definition.model_used}`")
-                if definition.created_at:
-                    attribution_parts.append(
-                        _iso(definition.created_at)
-                    )
-                if attribution_parts:
+            # Group by frame (context) when any definition carries one,
+            # mirroring the web UI's polysemy rendering. A frameless
+            # entry renders flat exactly as before.
+            if any(d.context_id for d in e.definitions):
+                groups: dict[str | None, list] = {}
+                order: list[str | None] = []
+                for d in e.definitions:
+                    if d.context_id not in groups:
+                        groups[d.context_id] = []
+                        order.append(d.context_id)
+                    groups[d.context_id].append(d)
+                # Untagged definitions render last.
+                if None in groups:
+                    order.remove(None)
+                    order.append(None)
+                for cid in order:
+                    if cid is None:
+                        lines.append("**Frame:** _(untagged)_")
+                    else:
+                        frame = ctx_names.get(cid, cid)
+                        lines.append(f"**Frame:** _{frame}_")
                     lines.append("")
-                    lines.append(f"_— {', '.join(attribution_parts)}_")
-                lines.append("")
+                    for definition in groups[cid]:
+                        lines.extend(_render_definition(definition))
+            else:
+                for definition in e.definitions:
+                    lines.extend(_render_definition(definition))
 
         if e.aliases:
             lines.append(
@@ -227,11 +251,27 @@ def _render_markdown(
     return "\n".join(lines)
 
 
+def _render_definition(definition: Any) -> list[str]:
+    lines = [f"> {definition.text}"]
+    attribution_parts = []
+    if definition.model_used:
+        attribution_parts.append(f"from `{definition.model_used}`")
+    if definition.created_at:
+        attribution_parts.append(_iso(definition.created_at))
+    if attribution_parts:
+        lines.append("")
+        lines.append(f"_— {', '.join(attribution_parts)}_")
+    lines.append("")
+    return lines
+
+
 # --- JSON ------------------------------------------------------------------
 
 
 def _build_json_payload(
-    entries: list[_EntryWithChildren], database_name: str
+    entries: list[_EntryWithChildren],
+    database_name: str,
+    ctx_names: dict[str, str],
 ) -> dict[str, Any]:
     return {
         "schema": "mahalath.glossary.v1",
@@ -253,6 +293,13 @@ def _build_json_payload(
                         "language": d.language,
                         "model_used": d.model_used,
                         "decision_log_id": d.decision_log_id,
+                        # The frame this definition speaks within
+                        # (polysemy, S2.22+). Additive — schema stays v1.
+                        "context_id": d.context_id,
+                        "context_name": (
+                            ctx_names.get(d.context_id)
+                            if d.context_id else None
+                        ),
                         "created_at": d.created_at,
                     }
                     for d in ec.entry.definitions

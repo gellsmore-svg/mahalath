@@ -167,9 +167,12 @@ def _write_accepted(
         )
 
     # Populate references_labels from the entry's definitions, so the
-    # reverse-index is built incrementally as entries land.
-    from mahalath.staleness import update_references
+    # reverse-index is built incrementally as entries land — and
+    # retro-link older entries whose definitions mention this new term,
+    # so the reverse index doesn't go stale as the ontology grows.
+    from mahalath.staleness import retro_link_new_entry, update_references
     update_references(db, mpl_label)
+    retro_link_new_entry(db, mpl_label)
 
     return entry, mpl_label
 

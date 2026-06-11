@@ -174,6 +174,52 @@ def update_references(
     return refs
 
 
+def retro_link_new_entry(db: Database, mpl_label: str) -> list[str]:
+    """Update OLDER entries' references when a NEW entry lands.
+
+    `update_references` keeps the new entry's own outbound references
+    current, but entries written *before* this term existed can't have
+    referenced it — their `references_labels` were computed against a
+    smaller ontology. Without this pass the reverse index (and with it
+    the staleness cascade and retrieval's `referenced_by` / closure)
+    silently under-reports until an operator runs `backfill-references`.
+
+    One server-side regex query finds the candidates (definitions that
+    mention the new canonical term as a whole word); each hit gets a
+    full `update_references` recompute. Returns the labels that now
+    reference the new entry.
+    """
+    repo = OntologyEntryRepository(db)
+    entry = repo.get(mpl_label)
+    if entry is None or not entry.canonical_term:
+        return []
+    term = entry.canonical_term.strip()
+    if len(term) < _MIN_SEMANTIC_TERM_LEN:
+        return []
+
+    pattern = r"\b" + re.escape(term) + r"\b"
+    candidates = [
+        doc["_id"]
+        for doc in db.ontology_entries.find(
+            {
+                "_id": {"$ne": mpl_label},
+                "definitions.text": {"$regex": pattern, "$options": "i"},
+            },
+            {"_id": 1},
+        )
+    ]
+    if not candidates:
+        return []
+
+    ontology_index = build_ontology_index(db)
+    linked: list[str] = []
+    for label in candidates:
+        refs = update_references(db, label, ontology_index=ontology_index)
+        if mpl_label in refs:
+            linked.append(label)
+    return linked
+
+
 # --- Reverse-index queries ------------------------------------------------
 
 

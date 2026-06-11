@@ -80,6 +80,21 @@ def test_score_entry_short_term_not_matched() -> None:
     assert score_entry(entry, "an ion moves") == 0
 
 
+def test_score_entry_label_not_prefix_matched() -> None:
+    # MPL-001 must NOT match inside MPL-001.001 (child) or MPL-001a
+    # (variant) — `.` is a word boundary, so substring/`\b` both fail here.
+    entry = OntologyEntry(mpl_label="MPL-001", canonical_term="x", confidence=8.0)
+    assert score_entry(entry, "tell me about mpl-001.001") == 0
+    assert score_entry(entry, "tell me about mpl-001a") == 0
+    # ...but a sentence-ending dot is fine.
+    assert score_entry(entry, "explain mpl-001.") == 30
+    # And the child label itself still matches its own entry.
+    child = OntologyEntry(
+        mpl_label="MPL-001.001", canonical_term="y", confidence=8.0
+    )
+    assert score_entry(child, "tell me about mpl-001.001") == 30
+
+
 # --- search_terms ---------------------------------------------------------
 
 

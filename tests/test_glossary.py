@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 from mahalath.db.models import (
+    DefinitionContext,
     DefinitionVersion,
     OntologyEntry,
     OntologyTreeEdge,
 )
 from mahalath.db.repositories import (
+    DefinitionContextRepository,
     OntologyEntryRepository,
     OntologyTreeRepository,
 )
@@ -106,6 +108,59 @@ def test_json_export_schema_shape(mongo_db) -> None:
     assert mpl_001["aliases"] == ["underlying medium", "ground of being"]
     # Definitions carry attribution
     assert mpl_001["definitions"][0]["model_used"] == "gemma4:e2b"
+
+
+def _seed_with_contexts(mongo_db):
+    """One entry holding definitions in two frames + one untagged."""
+    ctx_repo = DefinitionContextRepository(mongo_db)
+    ctx_st = DefinitionContext(name="structural", description="Structural frame.")
+    ctx_th = DefinitionContext(name="theological", description="Theological frame.")
+    ctx_repo.insert(ctx_st)
+    ctx_repo.insert(ctx_th)
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="substrate", confidence=8.0,
+        definitions=[
+            DefinitionVersion(text="The structural meaning.",
+                              model_used="gemma4:e2b",
+                              context_id=ctx_st.context_id),
+            DefinitionVersion(text="The theological meaning.",
+                              model_used="operator",
+                              context_id=ctx_th.context_id),
+            DefinitionVersion(text="A legacy untagged meaning."),
+        ],
+    ))
+    return ctx_st, ctx_th
+
+
+def test_markdown_export_groups_definitions_by_frame(mongo_db) -> None:
+    _seed_with_contexts(mongo_db)
+    body = export_markdown(mongo_db, database_name="x").output
+    assert "**Frame:** _structural_" in body
+    assert "**Frame:** _theological_" in body
+    # Untagged definitions collect into their own group, rendered last.
+    assert "**Frame:** _(untagged)_" in body
+    assert body.index("_(untagged)_") > body.index("_theological_")
+    assert "> The structural meaning." in body
+
+
+def test_markdown_export_frameless_entry_renders_flat(mongo_db) -> None:
+    # No definition carries a context → no Frame headings (Stage 1 shape).
+    _seed(mongo_db)
+    body = export_markdown(mongo_db, database_name="x").output
+    assert "**Frame:**" not in body
+    assert "> The fundamental underlying medium." in body
+
+
+def test_json_export_carries_definition_contexts(mongo_db) -> None:
+    ctx_st, ctx_th = _seed_with_contexts(mongo_db)
+    payload = json.loads(export_json(mongo_db, database_name="x").output)
+    defs = payload["entries"][0]["definitions"]
+    assert defs[0]["context_id"] == ctx_st.context_id
+    assert defs[0]["context_name"] == "structural"
+    assert defs[1]["context_id"] == ctx_th.context_id
+    assert defs[1]["context_name"] == "theological"
+    assert defs[2]["context_id"] is None
+    assert defs[2]["context_name"] is None
 
 
 def test_json_export_writes_file(mongo_db, tmp_path: Path) -> None:

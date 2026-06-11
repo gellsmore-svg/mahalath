@@ -18,6 +18,7 @@ from mahalath.staleness import (
     extract_references,
     list_stale,
     mark_dependents_stale,
+    retro_link_new_entry,
     update_references,
 )
 
@@ -162,6 +163,40 @@ def test_backfill_uses_semantic_matching(mongo_db) -> None:
     # MPL-002's definition mentions "Relational Substrate" (MPL-001).
     refs = OntologyEntryRepository(mongo_db).get("MPL-002").references_labels
     assert "MPL-001" in refs
+
+
+# --- Retro-link on insert ---------------------------------------------------
+
+
+def test_retro_link_updates_older_entries(mongo_db) -> None:
+    # MPL-001 was written when "vorton" didn't exist as an entry, so its
+    # references are (correctly, at the time) empty.
+    _seed(mongo_db, "MPL-001", "weave",
+          definitions=["A weave is a braid of vorton threads."])
+    update_references(mongo_db, "MPL-001")
+    assert OntologyEntryRepository(mongo_db).get("MPL-001").references_labels == []
+
+    # The vorton entry lands later; retro-link closes the reverse index.
+    _seed(mongo_db, "MPL-002", "vorton")
+    linked = retro_link_new_entry(mongo_db, "MPL-002")
+    assert linked == ["MPL-001"]
+    assert OntologyEntryRepository(mongo_db).get("MPL-001").references_labels == ["MPL-002"]
+    assert [e.mpl_label for e in entries_referencing(mongo_db, "MPL-002")] == ["MPL-001"]
+
+
+def test_retro_link_short_term_skipped(mongo_db) -> None:
+    # < 4 chars would over-match common words; same threshold as
+    # semantic matching.
+    _seed(mongo_db, "MPL-001", "weave", definitions=["An ion moves."])
+    _seed(mongo_db, "MPL-002", "ion")
+    assert retro_link_new_entry(mongo_db, "MPL-002") == []
+
+
+def test_retro_link_no_mentions_is_noop(mongo_db) -> None:
+    _seed(mongo_db, "MPL-001", "weave", definitions=["Nothing relevant."])
+    _seed(mongo_db, "MPL-002", "vorton")
+    assert retro_link_new_entry(mongo_db, "MPL-002") == []
+    assert OntologyEntryRepository(mongo_db).get("MPL-001").references_labels == []
 
 
 # --- Mark dependents stale ------------------------------------------------
