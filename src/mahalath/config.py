@@ -56,6 +56,12 @@ class RuntimeConfig(BaseModel):
     # required to agree (unanimously) on an action before it is eligible
     # for dispatch. Set to 1 to disable consensus (single-pass behavior).
     hierarchy_consensus_passes: int = 3
+    # Intent attribution consensus (I-B, ADR-025): number of independent
+    # attribution passes; a tag is stored only if EVERY pass proposes it,
+    # intentionality only if every pass agrees on the ordinal, and the
+    # stored intent_confidence is the minimum across passes. Set to 1 to
+    # disable consensus (NOT recommended for model-sourced tags).
+    intent_consensus_passes: int = 3
     # Per-corpus style overlay: path (relative to project root) of a
     # Markdown file injected into every agent prompt as
     # `## Style guidance for this corpus`. Carries voice notes, domain
@@ -72,7 +78,10 @@ class RuntimeConfig(BaseModel):
         "/mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe"
     )
     ollama_base_url: str = "http://localhost:11434"
-    ollama_timeout_seconds: int = 180
+    # Generous by design: the FIRST call after idle loads a multi-GB
+    # model from disk, which takes minutes on laptop hardware (operator
+    # direction 2026-06-11: "wait longer for llm calls"). Raised 180→600.
+    ollama_timeout_seconds: int = 600
 
 
 class IngestionConfig(BaseModel):

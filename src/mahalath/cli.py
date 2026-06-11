@@ -106,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip the post-persist pass that context-tags any definition "
         "the debate left untagged (only runs if contexts are defined).",
     )
+    process_doc.add_argument(
+        "--no-intent-backfill",
+        action="store_true",
+        help="Skip the post-persist N-pass intent attribution on this "
+        "run's accepted entries (only runs if an intent taxonomy exists).",
+    )
 
     process_input_parser = subcommands.add_parser(
         "process-input",
@@ -133,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-context-backfill",
         action="store_true",
         help="Skip the post-persist context-tagging pass on each document.",
+    )
+    process_input_parser.add_argument(
+        "--no-intent-backfill",
+        action="store_true",
+        help="Skip the post-persist intent attribution on each document.",
     )
     retrieve_parser = subcommands.add_parser(
         "retrieve",
@@ -289,6 +300,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Adapter (default: runtime.model_adapter; ollama_cli for local).",
     )
     backfill_contexts_parser.add_argument(
+        "--model", default=None,
+        help="Override adapter default model.",
+    )
+
+    backfill_intents_parser = subcommands.add_parser(
+        "backfill-intents",
+        help="Walk unattributed definitions and run N-pass intent "
+        "attribution (tags stored only on unanimity, ADR-025). Defaults "
+        "to dry-run; pass --apply to write.",
+    )
+    backfill_intents_parser.add_argument(
+        "--max-items", type=int, default=50,
+        help="Maximum definitions to process this run (default 50).",
+    )
+    backfill_intents_parser.add_argument(
+        "--apply", action="store_true",
+        help="Actually write unanimous attributions (otherwise dry-run + print).",
+    )
+    backfill_intents_parser.add_argument(
+        "--passes", type=int, default=None,
+        help="Override runtime.intent_consensus_passes (default 3).",
+    )
+    backfill_intents_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter (default: runtime.model_adapter; ollama_cli for local).",
+    )
+    backfill_intents_parser.add_argument(
         "--model", default=None,
         help="Override adapter default model.",
     )
@@ -456,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_hierarchy_review=args.no_hierarchy_review,
             consensus_passes_override=args.consensus_passes,
             skip_context_backfill=args.no_context_backfill,
+            skip_intent_backfill=args.no_intent_backfill,
         )
 
     if args.command == "propose-term":
@@ -549,6 +588,16 @@ def main(argv: list[str] | None = None) -> int:
             model_override=args.model,
         )
 
+    if args.command == "backfill-intents":
+        return _backfill_intents(
+            config,
+            max_items=args.max_items,
+            apply_flag=args.apply,
+            passes_override=args.passes,
+            adapter_name=args.adapter,
+            model_override=args.model,
+        )
+
     if args.command == "list-stale":
         return _list_stale(config)
 
@@ -615,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_hierarchy_review=args.no_hierarchy_review,
             consensus_passes_override=args.consensus_passes,
             skip_context_backfill=args.no_context_backfill,
+            skip_intent_backfill=args.no_intent_backfill,
         )
 
     if args.command == "debate-one":
@@ -680,6 +730,7 @@ def _process_document(
     skip_hierarchy_review: bool = False,
     consensus_passes_override: int | None = None,
     skip_context_backfill: bool = False,
+    skip_intent_backfill: bool = False,
 ) -> int:
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
@@ -709,6 +760,7 @@ def _process_document(
             consensus_passes_override=consensus_passes_override,
             style_overlay=style_overlay,
             skip_context_backfill=skip_context_backfill,
+            skip_intent_backfill=skip_intent_backfill,
         )
 
         if not result.get("ok"):
@@ -733,6 +785,7 @@ def _process_input(
     skip_hierarchy_review: bool = False,
     consensus_passes_override: int | None = None,
     skip_context_backfill: bool = False,
+    skip_intent_backfill: bool = False,
 ) -> int:
     from mahalath.adapters import make_adapter
     from mahalath.db import close_all, ensure_indexes, get_database
@@ -800,6 +853,7 @@ def _process_input(
                 consensus_passes_override=consensus_passes_override,
                 style_overlay=doc_overlay,
                 skip_context_backfill=skip_context_backfill,
+                skip_intent_backfill=skip_intent_backfill,
             )
             # Avoid double-keying document_id / title.
             for k, v in pipeline_result.items():
@@ -839,6 +893,7 @@ def _run_pipeline_on_document(
     consensus_passes_override: int | None,
     style_overlay: str | None,
     skip_context_backfill: bool = False,
+    skip_intent_backfill: bool = False,
 ) -> dict[str, Any]:
     """Run extract → debate → persist → hierarchy review on one document.
 
@@ -978,6 +1033,42 @@ def _run_pipeline_on_document(
             ],
         }
 
+    # Intent attribution (I-B, ADR-025): N-pass unanimity-gated tagging
+    # of this run's accepted entries. All model-sourced intent goes
+    # through this gate — the debate contract deliberately does NOT
+    # emit intent (a single in-debate sample can't satisfy unanimity).
+    # No-ops when no intent taxonomy is defined.
+    intent_backfill: dict[str, Any] | None = None
+    if not skip_intent_backfill and accepted_labels:
+        from mahalath.intents import backfill_intents
+        ib = backfill_intents(
+            db, adapter,
+            max_items=len(accepted_labels) * 8 or 50,
+            passes=config.runtime.intent_consensus_passes,
+            min_confidence=config.runtime.confidence_threshold,
+            apply=True,
+            only_labels=accepted_labels,
+            style_overlay=style_overlay,
+        )
+        intent_backfill = {
+            "attempted": ib.attempted,
+            "stored": ib.stored,
+            "below_threshold": ib.below_threshold,
+            "no_unanimous": ib.no_unanimous,
+            "errored": ib.errored,
+            "attributions": [
+                {
+                    "mpl_label": a.mpl_label,
+                    "definition_index": a.definition_index,
+                    "tags": a.unanimous_tags,
+                    "intentionality": a.intentionality,
+                    "intent_confidence": a.intent_confidence,
+                    "outcome": a.outcome,
+                }
+                for a in ib.attributions
+            ],
+        }
+
     glossary_paths: dict[str, str] | None = None
     if any(d.get("outcome") == "accepted" for d in debated):
         from mahalath.glossary import refresh_glossary
@@ -995,6 +1086,7 @@ def _run_pipeline_on_document(
         "remaining_candidates": [c.term for c in candidates[max_terms:]],
         "activity_log_path": str(log_path),
         "context_backfill": context_backfill,
+        "intent_backfill": intent_backfill,
         "glossary_refreshed": glossary_paths,
     }
 
@@ -1357,6 +1449,63 @@ def _seed_intents(config: AppConfig, *, dry_run: bool) -> int:
         return 0
     finally:
         close_all()
+
+
+def _backfill_intents(
+    config: AppConfig,
+    *,
+    max_items: int,
+    apply_flag: bool,
+    passes_override: int | None,
+    adapter_name: str | None,
+    model_override: str | None,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, get_database
+    from mahalath.intents import backfill_intents
+    from mahalath.style import load_style_overlay
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    passes = passes_override or config.runtime.intent_consensus_passes
+
+    try:
+        db = get_database(config)
+        result = backfill_intents(
+            db, adapter,
+            max_items=max_items,
+            passes=passes,
+            min_confidence=config.runtime.confidence_threshold,
+            apply=apply_flag,
+            style_overlay=load_style_overlay(config),
+        )
+    finally:
+        close_all()
+
+    print(json.dumps({
+        "ok": True,
+        "dry_run": not apply_flag,
+        "adapter": effective_adapter,
+        "model": getattr(adapter, "default_model", None),
+        "passes": passes,
+        **result.to_dict(),
+    }, indent=2))
+    return 0
 
 
 def _show_context(config: AppConfig, *, identifier: str) -> int:

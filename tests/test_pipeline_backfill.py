@@ -140,3 +140,103 @@ def test_pipeline_skip_flag_leaves_definition_untagged(
     label = [d for d in result["debated"] if d["outcome"] == "accepted"][0]["mpl_label"]
     stored = OntologyEntryRepository(mongo_db).get(label)
     assert stored.definitions[0].context_id is None
+
+
+# --- I-B: post-persist intent attribution ------------------------------------
+
+
+def _adapter_with_intents() -> MockAdapter:
+    from mahalath.intents import INTENT_ATTRIBUTION_TAG
+
+    adapter = _adapter()
+    # Same verdict every pass -> unanimity trivially satisfied (3 passes).
+    adapter.responses[INTENT_ATTRIBUTION_TAG] = json.dumps({
+        "intent_tags": ["teach"],
+        "intentionality": "high",
+        "confidence": 9.0,
+    })
+    return adapter
+
+
+def test_pipeline_attributes_intent_on_accepted_entry(
+    tmp_path: Path, mongo_config, mongo_db
+) -> None:
+    from mahalath.intents import resolve_intent_tag, seed_intents
+
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    DefinitionContextRepository(mongo_db).insert(
+        DefinitionContext(name="structural", description="Mechanism frame.")
+    )
+    seed_intents(mongo_db)
+    doc = _seed_document(tmp_path, mongo_db)
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, _adapter_with_intents(), cfg,
+        max_terms=1,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+    )
+
+    ib = result["intent_backfill"]
+    assert ib is not None
+    assert ib["stored"] == 1
+    assert ib["attributions"][0]["tags"] == ["teach"]
+    assert ib["attributions"][0]["intentionality"] == "high"
+
+    label = [d for d in result["debated"] if d["outcome"] == "accepted"][0]["mpl_label"]
+    stored = OntologyEntryRepository(mongo_db).get(label)
+    teach_id = resolve_intent_tag(mongo_db, "teach")
+    assert stored.definitions[0].intent_tags == [teach_id]
+    assert stored.definitions[0].intentionality == "high"
+    assert stored.definitions[0].intent_confidence == 9.0
+
+
+def test_pipeline_intent_skip_flag(tmp_path: Path, mongo_config, mongo_db) -> None:
+    from mahalath.intents import seed_intents
+
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    DefinitionContextRepository(mongo_db).insert(
+        DefinitionContext(name="structural", description="Mechanism frame.")
+    )
+    seed_intents(mongo_db)
+    doc = _seed_document(tmp_path, mongo_db)
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, _adapter_with_intents(), cfg,
+        max_terms=1,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+        skip_intent_backfill=True,
+    )
+
+    assert result["intent_backfill"] is None
+    label = [d for d in result["debated"] if d["outcome"] == "accepted"][0]["mpl_label"]
+    stored = OntologyEntryRepository(mongo_db).get(label)
+    assert stored.definitions[0].intent_tags == []
+    assert stored.definitions[0].intentionality is None
+
+
+def test_pipeline_intent_noop_without_taxonomy(
+    tmp_path: Path, mongo_config, mongo_db
+) -> None:
+    # No intent rows defined -> the tail no-ops without consulting the
+    # model (the keyed response is absent; an intent prompt would have
+    # fallen through to default_response and parse-failed loudly).
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    DefinitionContextRepository(mongo_db).insert(
+        DefinitionContext(name="structural", description="Mechanism frame.")
+    )
+    doc = _seed_document(tmp_path, mongo_db)
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, _adapter(), cfg,
+        max_terms=1,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+    )
+
+    ib = result["intent_backfill"]
+    assert ib is not None and ib["attempted"] == 0 and ib["stored"] == 0

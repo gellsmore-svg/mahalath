@@ -47,7 +47,9 @@ runtime:
   # the Mnemosyne convention.
   ollama_executable: /mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe
   ollama_base_url: http://localhost:11434
-  ollama_timeout_seconds: 180
+  # Generous: the first call after idle loads the model from disk,
+  # which takes minutes on laptop hardware.
+  ollama_timeout_seconds: 600
 
 ingestion:
   # APScheduler-style polling cadence for the watched input folder.

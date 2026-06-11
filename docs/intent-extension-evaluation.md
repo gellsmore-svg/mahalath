@@ -221,8 +221,23 @@ with `build_bundle`, so the bundle layer should exist first.
    Seeded into `mahalath_dev` for operator review; the other DBs get
    seeded at I-B kickoff once the vocabulary is confirmed.
    ADR-024/025/026 accepted 2026-06-11.
-2. **I-B — ingestion.** Debate output contract extension + scoped
-   pipeline backfill + `backfill-intents` CLI (dry-run default).
+2. **I-B — ingestion. DONE (S2.36).** Implemented as a uniform
+   post-accept N-pass step rather than a debate-contract extension —
+   a deliberate deviation: a single in-debate sample can never satisfy
+   ADR-025's unanimity gate, so ALL model-sourced attribution goes
+   through `intents.attribute_intent` (N independent passes, default
+   `runtime.intent_consensus_passes=3`; per-tag unanimity by
+   intersection; ordinal kept only if all passes agree;
+   intent_confidence = min; below-threshold and non-unanimous
+   attributions surface in the report for operator review, nothing
+   written). The pipeline tail runs a scoped `backfill_intents`
+   (S2.27 pattern, `--no-intent-backfill` opts out); standalone
+   `backfill-intents` CLI sweeps legacy definitions (dry-run default,
+   `--passes` override). All 9 DBs seeded with the operator-confirmed
+   8-tag vocabulary. Live unanimity smoke (the early I-D signal) is
+   BLOCKED on an environment fault — Ollama's llama-server crashes
+   with "CUDA error: device kernel image is invalid" on every
+   generation as of 2026-06-11 — and runs once Ollama is healthy.
 3. **I-C — surfaces.** Retrieval filter + `Meaning` fields + web UI
    badges + glossary export fields.
 4. **I-D — evaluation gate.** A/B a corpus run and measure

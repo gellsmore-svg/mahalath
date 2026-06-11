@@ -227,3 +227,240 @@ def test_chat_context_map_excludes_intents(mongo_db) -> None:
     assert "Context [structural]" in captured["prompt"]
     # No intent tag leaks into the frame-grouped context block.
     assert "Context [teach]" not in captured["prompt"]
+
+
+# --- I-B: N-pass attribution + backfill ---------------------------------------
+
+
+import json as _json
+from dataclasses import dataclass as _dataclass, field as _field
+
+from mahalath.adapters.base import AdapterResponse
+from mahalath.intents import (
+    INTENT_ATTRIBUTION_TAG,
+    attribute_intent,
+    backfill_intents,
+    build_intent_prompt,
+    parse_intent_verdict,
+)
+
+
+@_dataclass
+class _SeqAdapter:
+    """Returns a different canned response per call (cycles)."""
+
+    responses: list[str]
+    name: str = "sequential_mock"
+    default_model: str = "mock-model"
+    calls: list = _field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._index = 0
+
+    def generate(self, prompt, *, model=None, timeout_seconds=None,
+                 want_json=False):
+        self.calls.append(prompt)
+        text = self.responses[self._index % len(self.responses)]
+        self._index += 1
+        return AdapterResponse(
+            text=text, model=model or self.default_model, duration_ms=0,
+        )
+
+
+def _verdict(tags, intentionality="high", confidence=9.0) -> str:
+    return _json.dumps({
+        "intent_tags": tags,
+        "intentionality": intentionality,
+        "confidence": confidence,
+    })
+
+
+def _seed_entry(mongo_db, label="MPL-001", term="alpha") -> None:
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label=label, canonical_term=term, confidence=8.0,
+        definitions=[DefinitionVersion(text=f"{term} definition.")],
+    ))
+
+
+def test_build_intent_prompt_carries_taxonomy_and_marker(mongo_db) -> None:
+    seed_intents(mongo_db)
+    intents = DefinitionContextRepository(mongo_db).all(kind="intent")
+    prompt = build_intent_prompt("alpha", "Alpha def.", intents)
+    assert prompt.startswith(INTENT_ATTRIBUTION_TAG)
+    assert "- teach:" in prompt
+    assert "Alpha def." in prompt
+    assert "intentionality" in prompt.lower()
+
+
+def test_parse_intent_verdict_tolerant() -> None:
+    assert parse_intent_verdict(_verdict(["teach"])).intent_tags == ["teach"]
+    fenced = "```json\n" + _verdict(["warn"], "low", 7.5) + "\n```"
+    v = parse_intent_verdict(fenced)
+    assert v.intent_tags == ["warn"] and v.intentionality == "low"
+    prosey = "Here you go: " + _verdict([], "medium", 6.0) + " hope that helps"
+    assert parse_intent_verdict(prosey).intentionality == "medium"
+    assert parse_intent_verdict("no json at all") is None
+    # Out-of-vocabulary intentionality degrades to None, not an error.
+    bad = _json.dumps({"intent_tags": [], "intentionality": "extreme",
+                       "confidence": 9})
+    assert parse_intent_verdict(bad).intentionality is None
+
+
+def test_attribute_unanimous_stores(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach", "persuade"], "high", 9.0),
+        _verdict(["teach"], "high", 8.5),
+        _verdict(["teach", "warn"], "high", 9.5),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    # Only the tag EVERY pass proposed survives.
+    assert a.unanimous_tags == ["teach"]
+    assert a.outcome == "stored" and a.stored is True
+    assert a.intent_confidence == 8.5  # min across passes
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == a.unanimous_tag_ids
+    assert d.intentionality == "high"
+    assert d.intent_confidence == 8.5
+
+
+def test_attribute_no_unanimity_stores_nothing(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 9.0),
+        _verdict(["persuade"], "low", 9.0),   # disjoint tags + ordinal clash
+        _verdict(["warn"], "medium", 9.0),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    assert a.outcome == "no_unanimous_tags" and a.stored is False
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == [] and d.intentionality is None
+
+
+def test_attribute_below_threshold_not_stored(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 9.0),
+        _verdict(["teach"], "high", 5.0),     # one shaky pass drags the min
+        _verdict(["teach"], "high", 9.0),
+    ])
+    a = attribute_intent(
+        mongo_db, "MPL-001", 0, adapter, passes=3,
+        min_confidence=8.0, apply=True,
+    )
+    assert a.outcome == "below_threshold" and a.stored is False
+    assert a.unanimous_tags == ["teach"]      # surfaced for operator review
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == []
+
+
+def test_attribute_invented_tag_names_dropped(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[_verdict(["evangelize"], "high", 9.0)] * 3)
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    # Unanimous but not in the taxonomy -> resolves to nothing; the
+    # invented name never reaches storage. The unanimous in-vocabulary
+    # ordinal is independently storable, so the attribution still lands
+    # — with EMPTY tags.
+    assert a.unanimous_tag_ids == []
+    assert a.outcome == "stored"
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == []
+    assert d.intentionality == "high"
+
+
+def test_attribute_invented_tags_and_no_ordinal_stores_nothing(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    # Invented tag AND no unanimous ordinal -> nothing storable at all.
+    adapter = _SeqAdapter(responses=[
+        _verdict(["evangelize"], "high", 9.0),
+        _verdict(["evangelize"], "low", 9.0),
+        _verdict(["evangelize"], "high", 9.0),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    assert a.outcome == "no_unanimous_tags" and a.stored is False
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == [] and d.intentionality is None
+
+
+def test_attribute_parse_failure_voids_unanimity(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"]), "garbled non-json", _verdict(["teach"]),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    assert a.outcome == "parse_failed" and a.stored is False
+
+
+def test_attribute_intentionality_disagreement_drops_ordinal(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 9.0),
+        _verdict(["teach"], "medium", 9.0),
+        _verdict(["teach"], "high", 9.0),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    assert a.outcome == "stored"
+    assert a.intentionality is None           # ordinal not unanimous
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags and d.intentionality is None
+
+
+def test_attribute_no_taxonomy_returns_none(mongo_db) -> None:
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[_verdict(["teach"])])
+    assert attribute_intent(mongo_db, "MPL-001", 0, adapter) is None
+    assert adapter.calls == []                # adapter never consulted
+
+
+def test_backfill_intents_dry_run_and_apply(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db, "MPL-001", "alpha")
+    _seed_entry(mongo_db, "MPL-002", "beta")
+    adapter = _SeqAdapter(responses=[_verdict(["teach"], "high", 9.0)])
+
+    dry = backfill_intents(mongo_db, adapter, passes=3, apply=False)
+    assert dry.unattributed_at_start == 2
+    assert dry.stored == 2                    # would-store outcomes
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_tags == []                # ...but nothing written
+
+    applied = backfill_intents(mongo_db, adapter, passes=3, apply=True)
+    assert applied.stored == 2
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert len(d.intent_tags) == 1
+
+    # Attributed definitions drop out of the next walk.
+    again = backfill_intents(mongo_db, adapter, passes=3, apply=True)
+    assert again.unattributed_at_start == 0
+
+
+def test_backfill_intents_only_labels_scoping(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db, "MPL-001", "alpha")
+    _seed_entry(mongo_db, "MPL-002", "beta")
+    adapter = _SeqAdapter(responses=[_verdict(["teach"], "high", 9.0)])
+    result = backfill_intents(
+        mongo_db, adapter, passes=3, apply=True, only_labels={"MPL-002"},
+    )
+    assert result.unattributed_at_start == 1
+    assert OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0].intent_tags == []
+    assert OntologyEntryRepository(mongo_db).get("MPL-002").definitions[0].intent_tags != []
+
+
+def test_backfill_intents_no_taxonomy_noop(mongo_db) -> None:
+    _seed_entry(mongo_db)
+
+    class ExplodingAdapter:
+        def generate(self, *a, **k):  # pragma: no cover - must not run
+            raise AssertionError("no taxonomy -> adapter must not be called")
+
+    result = backfill_intents(mongo_db, ExplodingAdapter(), apply=True)
+    assert result.unattributed_at_start == 0
