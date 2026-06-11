@@ -1,7 +1,10 @@
 # Semantic Intent Extension — Evaluation Against the Existing Architecture
 
 Last updated: 2026-06-11
-Status: evaluation complete; **awaiting operator decision** on DQ-013/DQ-014.
+Status: **accepted** — operator resolved DQ-013/DQ-014 on 2026-06-11;
+draft ADR-024/025/026 below were promoted verbatim into
+`docs/architecture-decisions.md` as accepted decisions. Build sequenced
+after retrieval S-C, phased I-A..I-D.
 Source proposal: `docs/intent-extension-discussion.md` (operator-supplied,
 filed verbatim).
 Related: ADR-019, ADR-020, ADR-021, ADR-022, DQ-005; S2.25
@@ -167,11 +170,10 @@ intent code lands.
   rank boost for operator-authored definitions is a one-line scorer
   change if ever wanted.
 
-## Draft ADRs (pending operator acceptance)
+## Draft ADRs (ACCEPTED 2026-06-11 — now ADR-024/025/026)
 
-These are drafts. On acceptance they move into
-`docs/architecture-decisions.md` with final numbers; on rejection this
-section records why they were not taken.
+Promoted into `docs/architecture-decisions.md`; the canonical text
+lives there. Kept here for the drafting context.
 
 > **DRAFT ADR-024 — Intent annotates definitions; it never creates
 > entries or enters labels.** Inferred illocution (intent tags,
@@ -220,12 +222,8 @@ with `build_bundle`, so the bundle layer should exist first.
    is low, intent storage stays operator-only and the model pathway is
    shelved without schema cost.
 
-## Decision queue for the operator
+## Decision queue — resolved
 
-Recorded as DQ-013 / DQ-014 in `docs/architecture-decisions.md`:
-
-- **DQ-013:** adopt structured illocution (I-A..I-D) at all, and if so,
-  after S-C as recommended?
-- **DQ-014:** accept the I-D evaluation gate as the go/no-go criterion
-  for *model-sourced* intent attribution (operator-authored tags are
-  safe regardless)?
+DQ-013 and DQ-014 were both **accepted by the operator on 2026-06-11**
+(recorded in `docs/architecture-decisions.md`). The intent extension is
+greenlit on the I-A..I-D phasing, sequenced after retrieval S-C.
