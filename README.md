@@ -49,9 +49,9 @@ The same renderer backs retrieval text and the chat context block, so every cons
 
 `/api/chat` (and the `/chat` page) answers natural-language questions grounded in the live ontology — context selection by the shared scorer, frame-grouped prompts, MPL citations parsed back out for deep-linking, and tool-call action proposals (e.g. "X should be a child of Y") routed through the operator queue.
 
-### Intent extension (in progress)
+### Intent annotation
 
-Beyond *what a term means*: *why the corpus deploys it* (speech-act illocution — teach, persuade, reassure, warn, …). Accepted as ADR-024/025/026 with hard guardrails: intent annotates definitions as source-deployment metadata; it never creates entries, never partitions an entry, never enters a label; intentionality is ordinal (low/medium/high), never a pseudo-precise float; model-sourced tags require multi-pass unanimity and face an empirical go/no-go gate. Schema + governed taxonomy (I-A) are live; ingestion and retrieval surfaces follow.
+Beyond *what a term means*: *why the corpus deploys it* (speech-act illocution — teach, persuade, reassure, warn, …). Governed by hard guardrails (ADR-024/025/026): intent annotates definitions as source-deployment metadata; it never creates entries, never partitions an entry, never enters a label; intentionality is ordinal (low/medium/high), never a pseudo-precise float. All model-sourced tags pass an **N-pass unanimity gate** — a tag is stored only if every independent attribution pass proposes it, the ordinal only if all passes agree, and below-threshold attributions are withheld for operator review. The gate was validated empirically before rollout (15/15 unanimous attributions on real corpora, with minority tags and disagreed ordinals visibly dropped). New entries are attributed automatically at the pipeline tail; `backfill-intents` sweeps legacy definitions; retrieval filters by intent (`--intent teach`) without letting intent alter ranking.
 
 ## Quick start
 
@@ -126,9 +126,9 @@ The overlay is injected into every agent prompt (extraction, debate, hierarchy r
 |---|---|
 | Pipeline | `ingest-one`, `process-document`, `process-input`, `db-ping`, `show-config` |
 | Browse / export | `list-ontology`, `export-glossary`, `subtree` |
-| Retrieval | `retrieve`, `propose-term` |
+| Retrieval | `retrieve` (incl. `--intent`), `propose-term` |
 | Hierarchy / proposals | `list-proposals`, `show-proposal`, `accept-proposal`, `reject-proposal`, `rollback-proposal` |
-| Frames + intents | `list-contexts`, `add-context`, `show-context`, `seed-intents`, `backfill-contexts` |
+| Frames + intents | `list-contexts`, `add-context`, `show-context`, `seed-intents`, `backfill-contexts`, `backfill-intents` |
 | Self-healing | `list-stale`, `audit-stale`, `redefine-stale`, `backfill-references`, `backfill-paths` |
 | Review + serving | `frontier-review`, `serve`, `run` |
 
@@ -176,7 +176,7 @@ The full decision record (26 ADRs + open questions) lives in `docs/architecture-
 
 ## Status
 
-Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP) and the first slice of the intent extension. **348 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
+Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP) and the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), validated against the live corpus and applied across all databases. **371 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
 
 ## License
 

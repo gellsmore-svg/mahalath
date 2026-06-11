@@ -1500,6 +1500,11 @@ def _backfill_intents(
             apply=apply_flag,
             style_overlay=load_style_overlay(config),
         )
+        if apply_flag and result.stored > 0:
+            # The glossary export carries intent fields (I-C); keep the
+            # artifacts current, mirroring backfill-contexts.
+            from mahalath.glossary import refresh_glossary
+            refresh_glossary(config, db)
     finally:
         close_all()
 

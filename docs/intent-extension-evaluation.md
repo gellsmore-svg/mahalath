@@ -249,11 +249,38 @@ with `build_bundle`, so the bundle layer should exist first.
    glossary JSON gains `intent_tag_ids`/`intent_tags`/`intentionality`/
    `intent_confidence` and the Markdown the same aside. Intent never
    alters ranking — filter only, per the evaluation's position.
-4. **I-D — evaluation gate.** A/B a corpus run and measure
-   consensus-pass unanimity rate on intent tags. This answers "can
-   intentionality be inferred reliably enough?" with data; if unanimity
-   is low, intent storage stays operator-only and the model pathway is
-   shelved without schema cost.
+4. **I-D — evaluation gate. PASSED (2026-06-12, S2.38).** Measured on
+   gemma4:e2b (Ollama 0.23.4 after the operator rolled back the broken
+   0.30.7), 3 passes per definition, dry-run:
+
+   - **rs_bachelor (10 defs):** 10/10 unanimous, 0 below threshold,
+     0 errors, 39 s (30 calls). The intersection gate visibly
+     discriminated: minority tags proposed in 2/3 passes were dropped
+     (MPL-002, MPL-006), and MPL-007 "creation" earned a unanimous
+     `reassure` rather than blanket `teach`.
+   - **style corpus (5 defs):** 5/5 unanimous; one ordinal
+     disagreement (MPL-001 resurrection) correctly stored tags with
+     `intentionality=None`.
+
+   **Verdict: model-sourced attribution is reliable enough to keep**,
+   per the ADR-025 criterion. Caveats recorded: tag distribution skews
+   to `teach` (~12/15 on these corpora) — expected for teaching
+   material but it is the genre-projection signal to keep watching;
+   `intentionality` was uniformly `high` within this published corpus,
+   so the ordinal discriminates across corpus *types*, not within one
+   book.
+
+   **Operational rollout (same day):** `backfill_intents --apply`
+   swept all 9 DBs — **157 of 167 definitions attributed, 10 withheld
+   below threshold for operator review, 0 non-unanimous, 0 errors**
+   (rs_bachelor: 121/129 in 518 s). rs_bachelor distribution: teach
+   123 · prompt_reflection 59 · restore 14 · warn 7 · reassure 5 ·
+   challenge 5; ordinal high 113 · medium 3 · low 1 · none 4. Second
+   watch-item found in the withheld set: several below-threshold
+   passes returned confidence on a 0–1 scale (0.8–0.95) instead of
+   0–10 — a known small-model quirk; the conservative min() gate
+   handled it correctly (withheld, surfaced in the report), but a
+   scale-confusion heuristic could be added if these prove frequent.
 
 ## Decision queue — resolved
 
