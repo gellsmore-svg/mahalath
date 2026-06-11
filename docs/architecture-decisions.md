@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11
 
 ADRs are append-only. If a decision is reversed, add a new ADR rather
 than editing the old one, and note the supersession in both entries.
@@ -49,6 +49,8 @@ than editing the old one, and note the supersession in both entries.
 | DQ-010 | Multi-model concurrent use — when is concurrency required (specific phases) vs available (configurable)? | Available everywhere via the adapter; default to single-model in Stage 1 to keep iteration shape predictable. Concurrent debate (two different model families arguing) is a later slice. |
 | DQ-011 | Should Mahalath ingest the AMS corpus directly from `~/RS-claude/`, or expect operator-controlled file placement into `input/`? | Operator-controlled placement into `input/`. The watched-folder pattern is the architectural commitment in §3.3; an "ingest from path" command is a convenience that should not replace it. |
 | DQ-012 | First evaluation criterion — when is Stage 1 "done enough" to move to Stage 2? | One end-to-end ingestion → debate → write → log cycle on one term from the seed corpus, with manual review of the resulting entry quality. Stage 1 done means the loop runs; Stage 2 begins when quality is good enough to trust on a small batch. |
+| DQ-013 | Adopt structured illocution (per-definition intent tags + ordinal intentionality + intent confidence) per the operator's intent-extension proposal? Full evaluation + draft ADR-024/025/026 in `docs/intent-extension-evaluation.md`. | Yes, but sequenced after retrieval S-C, phased I-A..I-D. Intent annotates definitions only — never creates entries, never enters labels (draft ADR-024). S2.25's prose-level intent/valence guidance stays in place either way. |
+| DQ-014 | Go/no-go criterion for *model-sourced* intent attribution: is the I-D evaluation gate (multi-pass unanimity rate on intent tags, measured on a real corpus run) the accepted test? | Yes. If unanimity is low, intent storage stays operator-authored only and the model pathway is shelved at zero schema cost. Operator-authored tags are safe regardless of the gate's outcome. |
 
 ## Notes On Decision Reuse From Mnemosyne
 
