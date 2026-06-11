@@ -319,3 +319,33 @@ def test_api_propose_term_dry_run(app_client, mongo_db) -> None:
 def test_api_propose_term_requires_term(app_client) -> None:
     r = app_client.post("/api/propose_term", json={})
     assert r.status_code == 400
+
+
+# --- intent badges on the detail page (I-C) -----------------------------------
+
+
+def test_detail_page_shows_intent_badges(app_client, mongo_db) -> None:
+    from mahalath.intents import resolve_intent_tag, seed_intents
+
+    seed_intents(mongo_db)
+    teach_id = resolve_intent_tag(mongo_db, "teach")
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="alpha", confidence=8.0,
+        definitions=[DefinitionVersion(
+            text="Alpha definition.",
+            intent_tags=[teach_id],
+            intentionality="high",
+            intent_confidence=8.5,
+        )],
+    ))
+    r = app_client.get("/ontology/MPL-001")
+    assert r.status_code == 200
+    assert '<span class="badge intent">teach</span>' in r.text
+    assert "intentionality: high" in r.text
+
+
+def test_detail_page_no_intent_badges_when_unannotated(app_client, mongo_db) -> None:
+    _seed_two_entries(mongo_db)
+    r = app_client.get("/ontology/MPL-001")
+    assert r.status_code == 200
+    assert 'badge intent' not in r.text

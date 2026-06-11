@@ -132,6 +132,7 @@ def build_chat_prompt(
     *,
     style_overlay: str | None = None,
     definition_contexts: dict | None = None,
+    definition_intents: dict | None = None,
 ) -> str:
     """Build the chat prompt.
 
@@ -168,7 +169,9 @@ def build_chat_prompt(
         parts.append("ONTOLOGY CONTEXT")
         parts.append("")
         for entry in context_entries:
-            parts.extend(_render_entry_for_chat(entry, definition_contexts))
+            parts.extend(_render_entry_for_chat(
+                entry, definition_contexts, definition_intents,
+            ))
             parts.append("")
     else:
         parts.append("ONTOLOGY CONTEXT")
@@ -219,14 +222,16 @@ def build_chat_prompt(
 def _render_entry_for_chat(
     entry: OntologyEntry,
     contexts: dict | None = None,
+    intent_names: dict | None = None,
 ) -> list[str]:
     """Render an entry for the chat prompt via retrieval's shared renderer.
 
     `contexts` (optional) is a {context_id → DefinitionContext} map used
-    to resolve frame names + descriptions. The actual text shaping lives
-    in `retrieval.render_entry_lines` — the ONE renderer — so the chat
-    context block and retrieval bundle text look identical to a
-    downstream model (S-C).
+    to resolve frame names + descriptions; `intent_names` (optional) is
+    a {context_id → name} map for intent tags (I-C). The actual text
+    shaping lives in `retrieval.render_entry_lines` — the ONE renderer —
+    so the chat context block and retrieval bundle text look identical
+    to a downstream model (S-C).
     """
     from mahalath.retrieval import Meaning, render_entry_lines
 
@@ -243,6 +248,11 @@ def _render_entry_for_chat(
             model_used=d.model_used,
             consensus_score=d.consensus_score,
             created_at=None,
+            intent_tags=[
+                (intent_names or {}).get(t, t) for t in d.intent_tags
+            ],
+            intentionality=d.intentionality,
+            intent_confidence=d.intent_confidence,
         ))
 
     return render_entry_lines(
@@ -368,17 +378,23 @@ def answer_question(
         max_entries=max_context_entries,
         focus_label=focus_label,
     )
-    # Pull the definition_contexts table so the prompt can group
-    # definitions by frame (frames only — intent tags are a separate
-    # taxonomy, ADR-024).
+    # Pull the definition_contexts table once and partition by kind:
+    # frames group the definitions; intent names label the deployment
+    # annotations (I-C). The two taxonomies never mix (ADR-024).
     from mahalath.db.repositories import DefinitionContextRepository
-    contexts_list = DefinitionContextRepository(db).all(kind="frame")
-    contexts_map = {c.context_id: c for c in contexts_list}
+    all_contexts = DefinitionContextRepository(db).all()
+    contexts_map = {
+        c.context_id: c for c in all_contexts if c.kind == "frame"
+    }
+    intents_map = {
+        c.context_id: c.name for c in all_contexts if c.kind == "intent"
+    }
 
     prompt = build_chat_prompt(
         question, context_entries,
         style_overlay=style_overlay,
         definition_contexts=contexts_map if contexts_map else None,
+        definition_intents=intents_map if intents_map else None,
     )
 
     start = time.monotonic()

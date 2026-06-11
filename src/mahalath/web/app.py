@@ -91,6 +91,9 @@ button.rollback { border-color: #6c757d; color: #444; }
 .ctxdesc { font-size: 0.85em; color: #555; }
 .badge.frame { background: #e7e0f5; color: #4b2e83; }
 .badge.untagged { background: #f3f3f3; color: #777; border: 1px dashed #bbb; }
+.badge.intent { background: #e0f0e3; color: #1e5631; margin-right: 0.3em; }
+.badge.intentionality { background: #fdf2dc; color: #7a5c00; }
+.intents { font-size: 0.85em; color: #555; margin: 0.2em 0 0.6em; }
 .polysemy { font-size: 0.9em; color: #4b2e83; background: #f6f2fd;
             border-left: 3px solid #b9a6e0; padding: 0.5em 0.8em; margin: 0.4em 0; }
 .kvbox th { width: 12em; }
@@ -268,10 +271,24 @@ def _register_routes(app: FastAPI) -> None:
             ordered_cids.append(None)
 
         def _def_block(d: Any) -> str:
+            # Intent annotation (I-C): deployment metadata badges.
+            intent_html = ""
+            badges = "".join(
+                f'<span class="badge intent">{escape(contexts_by_id[t].name if t in contexts_by_id else t)}</span>'
+                for t in d.intent_tags
+            )
+            if d.intentionality:
+                badges += (
+                    f'<span class="badge intentionality">'
+                    f'intentionality: {escape(d.intentionality)}</span>'
+                )
+            if badges:
+                intent_html = f'<p class="intents">deployed to: {badges}</p>' \
+                    if d.intent_tags else f'<p class="intents">{badges}</p>'
             return f"""
 <div class="definition">{escape(d.text)}</div>
 <p class="attribution">— from <code>{escape(d.model_used or "?")}</code> at {_iso(d.created_at)}</p>
-"""
+{intent_html}"""
 
         sections = []
         for cid in ordered_cids:
@@ -651,7 +668,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
         """Prompt-ready codified bundle for an orchestrating LLM (S-C).
 
         Body: {"terms": [...], "labels": [...], "filters": {branch,
-        context, status, min_confidence}, "token_budget": N,
+        context, status, min_confidence, intent}, "token_budget": N,
         "format": "json"|"text"}. Labels accept frame-scoped handles
         ("MPL-004#structural"). Returns the bundle (all frames per
         entry, ADR-022; reference-closed, ADR-023).
@@ -672,6 +689,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
             context_name=raw_filters.get("context"),
             status=raw_filters.get("status"),
             min_confidence=float(min_conf) if min_conf is not None else None,
+            intent_tag=raw_filters.get("intent"),
         )
         token_budget = int(payload.get("token_budget", 1500))
         out_format = str(payload.get("format", "json"))

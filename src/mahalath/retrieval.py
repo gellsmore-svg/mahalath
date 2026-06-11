@@ -140,6 +140,12 @@ class Meaning:
     model_used: str | None
     consensus_score: float | None
     created_at: str | None
+    # Intent annotation (I-C surfaces what I-B stored; ADR-024/025).
+    # `intent_tags` carries readable taxonomy NAMES; raw ids live on
+    # the underlying DefinitionVersion.
+    intent_tags: list[str] = field(default_factory=list)
+    intentionality: str | None = None
+    intent_confidence: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -173,6 +179,8 @@ class Filters:
     context_name: str | None = None    # entry must carry a definition in this frame
     status: str | None = None
     min_confidence: float | None = None
+    intent_tag: str | None = None      # entry must carry a definition tagged
+                                       # with this intent (name or context_id)
 
 
 # --- Search ---------------------------------------------------------------
@@ -199,6 +207,15 @@ def search_terms(
     query_cf = " ".join(terms).casefold()
     terms_cf = [t.casefold() for t in terms]
 
+    # Resolve an intent-tag filter once (name or id → context_id). An
+    # unknown / frame name matches nothing — fail closed, not open.
+    intent_tag_id: str | None = None
+    if filters is not None and filters.intent_tag:
+        from mahalath.intents import resolve_intent_tag
+        intent_tag_id = resolve_intent_tag(db, filters.intent_tag)
+        if intent_tag_id is None:
+            return []
+
     text_hits = _text_search(db, " ".join(terms))
 
     scored: list[Match] = []
@@ -211,7 +228,7 @@ def search_terms(
         total = base + int(round(text_bonus * 10))
         if total <= 0:
             continue
-        if not _passes(db, entry, filters, ctx_by_id):
+        if not _passes(db, entry, filters, ctx_by_id, intent_tag_id):
             continue
         frames = sorted({
             ctx_by_id.get(d.context_id, d.context_id)
@@ -251,6 +268,7 @@ def _passes(
     entry: OntologyEntry,
     filters: Filters | None,
     ctx_by_id: dict[str, str],
+    intent_tag_id: str | None = None,
 ) -> bool:
     if filters is None:
         return True
@@ -261,6 +279,11 @@ def _passes(
     if filters.context_name is not None:
         names = {ctx_by_id.get(d.context_id) for d in entry.definitions if d.context_id}
         if filters.context_name not in names:
+            return False
+    if intent_tag_id is not None:
+        if not any(
+            intent_tag_id in d.intent_tags for d in entry.definitions
+        ):
             return False
     if filters.branch is not None:
         path = resolved_path(db, entry)
@@ -295,6 +318,10 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
     # an intent-taxonomy row (ADR-024).
     ctx_by_id = {c.context_id: c for c in ctx_repo.all(kind="frame")}
     ctx_by_name = {c.name: c for c in ctx_by_id.values()}
+    # Intent ids → readable names for the Meaning surface (I-C).
+    intent_name_by_id = {
+        c.context_id: c.name for c in ctx_repo.all(kind="intent")
+    }
 
     # Resolve a frame filter (by id or readable name) to a context_id.
     keep_ctx_id: str | None = None
@@ -318,6 +345,11 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
             model_used=d.model_used,
             consensus_score=d.consensus_score,
             created_at=d.created_at.isoformat() if d.created_at else None,
+            intent_tags=[
+                intent_name_by_id.get(t, t) for t in d.intent_tags
+            ],
+            intentionality=d.intentionality,
+            intent_confidence=d.intent_confidence,
         ))
     if keep_ctx_id is not None and not meanings:
         return None  # frame exists globally but this entry has no def in it
@@ -538,6 +570,15 @@ def render_entry_lines(
                     lines.append(f"      [{m.model_used or '?'}] {m.description}")
                 else:
                     lines.append(f"      {m.description}")
+                # Intent annotation (deployment metadata, ADR-024) —
+                # rendered as an aside so it never reads as semantics.
+                extras = []
+                if m.intent_tags:
+                    extras.append("deployed to: " + ", ".join(m.intent_tags))
+                if m.intentionality:
+                    extras.append(f"intentionality: {m.intentionality}")
+                if extras:
+                    lines.append(f"        ({'; '.join(extras)})")
 
     if references:
         lines.append(f"  References: {', '.join(references[:8])}")

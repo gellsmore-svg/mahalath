@@ -464,3 +464,93 @@ def test_backfill_intents_no_taxonomy_noop(mongo_db) -> None:
 
     result = backfill_intents(mongo_db, ExplodingAdapter(), apply=True)
     assert result.unattributed_at_start == 0
+
+
+# --- I-C: intent on the read surfaces -----------------------------------------
+
+
+def _tagged_entry(mongo_db, label="MPL-001", term="alpha"):
+    """Entry whose definition carries the 'teach' intent + high ordinal."""
+    seed_intents(mongo_db)
+    teach_id = resolve_intent_tag(mongo_db, "teach")
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label=label, canonical_term=term, confidence=8.0,
+        definitions=[DefinitionVersion(
+            text=f"{term} definition.",
+            intent_tags=[teach_id],
+            intentionality="high",
+            intent_confidence=8.5,
+        )],
+    ))
+    return teach_id
+
+
+def test_search_filters_by_intent_tag(mongo_db) -> None:
+    from mahalath.retrieval import Filters, search_terms
+    _tagged_entry(mongo_db, "MPL-001", "alpha")
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-002", canonical_term="alphabet", confidence=8.0,
+        definitions=[DefinitionVersion(text="alphabet definition.")],
+    ))
+    hit = search_terms(mongo_db, ["alpha"], filters=Filters(intent_tag="teach"))
+    assert [m.mpl_label for m in hit] == ["MPL-001"]
+    miss = search_terms(mongo_db, ["alpha"], filters=Filters(intent_tag="warn"))
+    assert miss == []
+    # Unknown tag (or a frame name) fails closed.
+    unknown = search_terms(
+        mongo_db, ["alpha"], filters=Filters(intent_tag="nonexistent"),
+    )
+    assert unknown == []
+
+
+def test_get_codified_carries_intent_names(mongo_db) -> None:
+    from mahalath.retrieval import get_codified
+    _tagged_entry(mongo_db)
+    ref = get_codified(mongo_db, "MPL-001")
+    m = ref.meanings[0]
+    assert m.intent_tags == ["teach"]          # readable name, not the id
+    assert m.intentionality == "high"
+    assert m.intent_confidence == 8.5
+
+
+def test_bundle_text_shows_deployment_aside(mongo_db) -> None:
+    from mahalath.retrieval import build_bundle
+    _tagged_entry(mongo_db)
+    bundle = build_bundle(mongo_db, ["alpha"])
+    assert "(deployed to: teach; intentionality: high)" in bundle.as_text
+
+
+def test_chat_prompt_shows_deployment_aside(mongo_db) -> None:
+    import json as __json
+    from mahalath.adapters import MockAdapter
+    from mahalath.chat import answer_question
+
+    _tagged_entry(mongo_db)
+    captured: dict = {}
+
+    class CapturingAdapter(MockAdapter):
+        def generate(self, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return super().generate(prompt, **kwargs)
+
+    adapter = CapturingAdapter(default_response=__json.dumps(
+        {"answer": "ok", "suggested_actions": []}
+    ))
+    answer_question("what is alpha?", mongo_db, adapter)
+    assert "deployed to: teach" in captured["prompt"]
+
+
+def test_glossary_exports_intent_fields(mongo_db) -> None:
+    import json as __json
+    from mahalath.glossary import export_json, export_markdown
+
+    teach_id = _tagged_entry(mongo_db)
+    payload = __json.loads(export_json(mongo_db, database_name="x").output)
+    d = payload["entries"][0]["definitions"][0]
+    assert d["intent_tag_ids"] == [teach_id]
+    assert d["intent_tags"] == ["teach"]
+    assert d["intentionality"] == "high"
+    assert d["intent_confidence"] == 8.5
+
+    md = export_markdown(mongo_db, database_name="x").output
+    assert "_(deployed to: teach; intentionality: high)_" in md

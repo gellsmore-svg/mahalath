@@ -228,10 +228,10 @@ def _render_markdown(
                         lines.append(f"**Frame:** _{frame}_")
                     lines.append("")
                     for definition in groups[cid]:
-                        lines.extend(_render_definition(definition))
+                        lines.extend(_render_definition(definition, ctx_names))
             else:
                 for definition in e.definitions:
-                    lines.extend(_render_definition(definition))
+                    lines.extend(_render_definition(definition, ctx_names))
 
         if e.aliases:
             lines.append(
@@ -251,7 +251,9 @@ def _render_markdown(
     return "\n".join(lines)
 
 
-def _render_definition(definition: Any) -> list[str]:
+def _render_definition(
+    definition: Any, ctx_names: dict[str, str] | None = None
+) -> list[str]:
     lines = [f"> {definition.text}"]
     attribution_parts = []
     if definition.model_used:
@@ -261,6 +263,18 @@ def _render_definition(definition: Any) -> list[str]:
     if attribution_parts:
         lines.append("")
         lines.append(f"_— {', '.join(attribution_parts)}_")
+    # Intent annotation (deployment metadata about the source, ADR-024).
+    intent_parts = []
+    if definition.intent_tags:
+        names = ", ".join(
+            (ctx_names or {}).get(t, t) for t in definition.intent_tags
+        )
+        intent_parts.append(f"deployed to: {names}")
+    if definition.intentionality:
+        intent_parts.append(f"intentionality: {definition.intentionality}")
+    if intent_parts:
+        lines.append("")
+        lines.append(f"_({'; '.join(intent_parts)})_")
     lines.append("")
     return lines
 
@@ -303,6 +317,14 @@ def _build_json_payload(
                         # Multi-agent agreement of the debate that wrote
                         # this definition (S-D); None for operator/legacy.
                         "consensus_score": d.consensus_score,
+                        # Intent annotation (I-B/I-C): deployment metadata
+                        # about the source, never the term's semantics.
+                        "intent_tag_ids": list(d.intent_tags),
+                        "intent_tags": [
+                            ctx_names.get(t, t) for t in d.intent_tags
+                        ],
+                        "intentionality": d.intentionality,
+                        "intent_confidence": d.intent_confidence,
                         "created_at": d.created_at,
                     }
                     for d in ec.entry.definitions

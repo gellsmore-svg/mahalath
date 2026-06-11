@@ -238,8 +238,17 @@ with `build_bundle`, so the bundle layer should exist first.
    BLOCKED on an environment fault — Ollama's llama-server crashes
    with "CUDA error: device kernel image is invalid" on every
    generation as of 2026-06-11 — and runs once Ollama is healthy.
-3. **I-C — surfaces.** Retrieval filter + `Meaning` fields + web UI
-   badges + glossary export fields.
+3. **I-C — surfaces. DONE (S2.37).** `Filters.intent_tag` (name or id;
+   resolved once via `resolve_intent_tag`, fails closed on unknown /
+   frame names) on `search_terms` / `mahalath retrieve --intent` /
+   `/api/retrieve` filters; `Meaning` carries readable `intent_tags` +
+   `intentionality` + `intent_confidence` (populated by
+   `get_codified`); the shared renderer emits a "(deployed to: …;
+   intentionality: …)" aside under each annotated definition — so
+   bundles AND chat context show it; web UI detail page badges; the
+   glossary JSON gains `intent_tag_ids`/`intent_tags`/`intentionality`/
+   `intent_confidence` and the Markdown the same aside. Intent never
+   alters ranking — filter only, per the evaluation's position.
 4. **I-D — evaluation gate.** A/B a corpus run and measure
    consensus-pass unanimity rate on intent tags. This answers "can
    intentionality be inferred reliably enough?" with data; if unanimity

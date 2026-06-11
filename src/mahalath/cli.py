@@ -169,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
         "--status", default=None, help="Restrict to entries with this status.",
     )
     retrieve_parser.add_argument(
+        "--intent", default=None,
+        help="Restrict to entries carrying a definition tagged with this "
+        "intent (name or id), e.g. --intent teach.",
+    )
+    retrieve_parser.add_argument(
         "--min-confidence", type=float, default=None,
         help="Restrict to entries at or above this confidence.",
     )
@@ -518,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
             context=args.context,
             status=args.status,
             min_confidence=args.min_confidence,
+            intent=args.intent,
             matches_only=args.matches_only,
             budget=args.budget,
             out_format=args.format,
@@ -1898,6 +1904,7 @@ def _retrieve(
     context: str | None,
     status: str | None,
     min_confidence: float | None,
+    intent: str | None,
     matches_only: bool,
     budget: int,
     out_format: str,
@@ -1918,6 +1925,7 @@ def _retrieve(
             context_name=context,
             status=status,
             min_confidence=min_confidence,
+            intent_tag=intent,
         )
         if matches_only:
             matches = search_terms(db, terms, filters=filters, limit=limit)
