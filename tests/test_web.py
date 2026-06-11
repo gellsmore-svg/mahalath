@@ -221,3 +221,61 @@ def test_documents_renders_empty_state(app_client) -> None:
     r = app_client.get("/documents")
     assert r.status_code == 200
     assert "no documents" in r.text
+
+
+# --- /api/retrieve (S-C) ----------------------------------------------------
+
+
+def _seed_retrieval_chain(mongo_db) -> None:
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="alpha", confidence=8.0,
+        references_labels=["MPL-002"],
+        definitions=[DefinitionVersion(text="Alpha cites MPL-002.")],
+    ))
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-002", canonical_term="beta", confidence=8.0,
+        definitions=[DefinitionVersion(text="Beta meaning.")],
+    ))
+
+
+def test_api_retrieve_returns_bundle(app_client, mongo_db) -> None:
+    _seed_retrieval_chain(mongo_db)
+    r = app_client.post("/api/retrieve", json={"terms": ["alpha"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    bundle = body["bundle"]
+    assert bundle["entries"][0]["mpl_label"] == "MPL-001"
+    # Reference closure (ADR-023) rides along.
+    assert [c["mpl_label"] for c in bundle["closure"]] == ["MPL-002"]
+    assert "CODIFIED MEANINGS" in bundle["as_text"]
+
+
+def test_api_retrieve_text_format(app_client, mongo_db) -> None:
+    _seed_retrieval_chain(mongo_db)
+    r = app_client.post(
+        "/api/retrieve", json={"terms": ["alpha"], "format": "text"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "bundle" not in body
+    assert "--- MPL-001: alpha ---" in body["text"]
+
+
+def test_api_retrieve_accepts_labels_and_filters(app_client, mongo_db) -> None:
+    _seed_retrieval_chain(mongo_db)
+    r = app_client.post("/api/retrieve", json={
+        "labels": ["MPL-002"],
+        "filters": {"min_confidence": 5.0},
+        "token_budget": 800,
+    })
+    assert r.status_code == 200
+    bundle = r.json()["bundle"]
+    assert bundle["entries"][0]["mpl_label"] == "MPL-002"
+    assert bundle["token_budget"] == 800
+
+
+def test_api_retrieve_requires_input(app_client) -> None:
+    r = app_client.post("/api/retrieve", json={})
+    assert r.status_code == 400

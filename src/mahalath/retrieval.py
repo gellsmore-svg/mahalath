@@ -20,13 +20,28 @@ resolution to the denormalised `OntologyEntry.path` (maintained in
 `paths.py`), falling back to a live walk for un-backfilled legacy
 entries.
 
+S-C adds the prompt-ready layer:
+
+  - `build_bundle` — resolve terms and/or explicit MPL refs into a
+    token-budgeted `Bundle`: primary `CodifiedRef`s with ALL their
+    frames, a mandatory reference closure (ADR-023, cycle-safe), ranked
+    alternatives, and a compact NL rendering (`as_text`).
+  - `render_entry_lines` — the ONE text renderer shared by bundle
+    output and the chat context block, so retrieval text and chat
+    context look identical to a downstream model.
+  - Token accounting is a chars/4 estimate (retrieval-spec Q2 lean).
+    Budget pressure trims breadth and verbosity in recorded steps
+    (`Bundle.degradations`); it NEVER collapses the frame set of an
+    included entry and NEVER drops a closure node.
+
 Retrieval never collapses polysemy (ADR-022): `get_codified` returns
-every frame; the caller disambiguates. Reference closure and budgeted
-bundles arrive in a later slice (S-C).
+every frame; the caller disambiguates.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -431,3 +446,416 @@ def _subtree_walk(
         if not frontier:
             break
     return found
+
+
+# --- Shared text rendering (S-C) -------------------------------------------
+
+
+def render_entry_lines(
+    *,
+    mpl_label: str,
+    canonical_term: str,
+    meanings: list[Meaning],
+    parent_label: str | None = None,
+    path: list[str] | None = None,
+    references: list[str] | None = None,
+    aliases: list[str] | None = None,
+    is_stale: bool = False,
+    stale_reasons: list[dict] | None = None,
+    context_descriptions: dict[str, str] | None = None,
+    compact: bool = False,
+    provenance: bool = True,
+    closure_text_cap: int = 160,
+) -> list[str]:
+    """Render one entry as prompt text. The ONE renderer.
+
+    Both the bundle's `as_text` and the chat context block go through
+    here, so a downstream model sees the same idiom everywhere (MPL
+    label primary, frame-grouped, co-equal frames called out).
+
+    `compact=True` is the closure-node fidelity: label + per-frame
+    meaning one-liners (capped at `closure_text_cap` chars), no
+    provenance/tree detail. `provenance=False` keeps the full shape but
+    drops per-definition attribution (a budget degradation step).
+    `context_descriptions` maps context NAME -> description.
+    """
+    lines: list[str] = [f"--- {mpl_label}: {canonical_term} ---"]
+
+    if compact:
+        for m in meanings:
+            frame = m.context_name or "unspecified"
+            text = m.description.strip()
+            if len(text) > closure_text_cap:
+                text = text[: closure_text_cap - 1].rstrip() + "…"
+            lines.append(f"  [{frame}] {text}")
+        if is_stale:
+            lines.append("  (STALE)")
+        return lines
+
+    lines.append(f"  Parent: {parent_label or '(top-level)'}")
+    if path:
+        lines.append(f"  Path: {' > '.join(path)}")
+    if is_stale:
+        reasons = stale_reasons or []
+        lines.append(f"  STALE (reasons: {len(reasons)})")
+        for r in reasons[-2:]:
+            note = r.get("note") or ""
+            change_type = r.get("change_type", "?")
+            lines.append(f"    - {change_type}: {note}")
+
+    if meanings:
+        distinct_ctx = {m.context_id for m in meanings}
+        if len(distinct_ctx) > 1:
+            lines.append(
+                "  Definitions (multiple contexts are co-equal — each speaks "
+                "from its own frame; none supersedes another):"
+            )
+        else:
+            lines.append("  Definitions:")
+        # Group by frame, preserving first-appearance order.
+        order: list[str | None] = []
+        groups: dict[str | None, list[Meaning]] = {}
+        for m in meanings:
+            if m.context_id not in groups:
+                groups[m.context_id] = []
+                order.append(m.context_id)
+            groups[m.context_id].append(m)
+        for cid in order:
+            group = groups[cid]
+            frame = group[0].context_name
+            if frame:
+                desc = (context_descriptions or {}).get(frame)
+                if desc:
+                    lines.append(f"    Context [{frame}] — {desc}")
+                else:
+                    lines.append(f"    Context [{frame}]")
+            else:
+                lines.append("    Context [unspecified]")
+            for m in group:
+                if provenance:
+                    lines.append(f"      [{m.model_used or '?'}] {m.description}")
+                else:
+                    lines.append(f"      {m.description}")
+
+    if references:
+        lines.append(f"  References: {', '.join(references[:8])}")
+    if aliases:
+        lines.append(f"  Aliases: {', '.join(aliases[:5])}")
+    return lines
+
+
+def render_codified_lines(
+    ref: CodifiedRef,
+    *,
+    context_descriptions: dict[str, str] | None = None,
+    compact: bool = False,
+    provenance: bool = True,
+    closure_text_cap: int = 160,
+) -> list[str]:
+    """`render_entry_lines` adapter for a CodifiedRef."""
+    return render_entry_lines(
+        mpl_label=ref.mpl_label,
+        canonical_term=ref.canonical_term,
+        meanings=ref.meanings,
+        parent_label=ref.parent_label,
+        path=ref.path or None,
+        references=ref.references,
+        aliases=ref.aliases,
+        is_stale=ref.is_stale,
+        stale_reasons=ref.stale_reasons,
+        context_descriptions=context_descriptions,
+        compact=compact,
+        provenance=provenance,
+        closure_text_cap=closure_text_cap,
+    )
+
+
+def estimate_tokens(text: str) -> int:
+    """Char-based token estimate (~4 chars/token; retrieval-spec Q2 lean)."""
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text) / 4))
+
+
+# --- Bundles (S-C) ----------------------------------------------------------
+
+
+@dataclass
+class BundleAlternative:
+    """A ranked match that did not make the primary set."""
+
+    mpl_label: str
+    canonical_term: str
+    score: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class Bundle:
+    """A prompt-ready, reference-closed, token-budgeted answer set.
+
+    `entries` are the primary matches (every frame present, ADR-022).
+    `closure` is the transitive set of MPL labels referenced by any
+    included entry (ADR-023) — rendered compactly in `as_text` but never
+    dropped. `degradations` records which budget trims were applied so
+    the caller can see why the output is shaped the way it is.
+    """
+
+    entries: list[CodifiedRef]
+    closure: list[CodifiedRef]
+    alternatives: list[BundleAlternative]
+    unresolved: list[str]
+    token_estimate: int
+    token_budget: int
+    degradations: list[str]
+    as_text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "entries": [e.to_dict() for e in self.entries],
+            "closure": [c.to_dict() for c in self.closure],
+            "alternatives": [a.to_dict() for a in self.alternatives],
+            "unresolved": list(self.unresolved),
+            "token_estimate": self.token_estimate,
+            "token_budget": self.token_budget,
+            "degradations": list(self.degradations),
+            "as_text": self.as_text,
+        }
+
+    def as_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
+
+
+def build_bundle(
+    db: Database,
+    refs_or_terms: list[str],
+    *,
+    token_budget: int = 1500,
+    filters: Filters | None = None,
+    limit_per_term: int = 5,
+) -> Bundle:
+    """Compose a prompt-ready bundle from human terms and/or MPL refs.
+
+    Inputs that parse as MPL refs (`MPL-x`, `MPL-x#<frame>`) are
+    expanded directly — these are caller-chosen handles and are never
+    dropped under budget. Everything else is resolved via
+    `search_terms`; the top match per term becomes a primary (with ALL
+    frames, ADR-022) and the rest become ranked alternatives.
+
+    Reference closure (ADR-023): every label cited by an included entry
+    is pulled in transitively (entry-level references, Q5), cycle-safe.
+
+    Budget (chars/4 estimate, Q2): degradation steps are applied in
+    order until the rendering fits — cap alternatives, drop provenance
+    detail, trim the lowest-scored term-derived primaries (moved to
+    alternatives, never below one primary), and finally harden the
+    closure one-liners. The frame set of an included entry and the
+    closure node set are NEVER reduced. Steps applied are recorded in
+    `Bundle.degradations`.
+    """
+    ctx_descriptions = {
+        c.name: c.description for c in DefinitionContextRepository(db).all()
+    }
+
+    explicit: list[str] = []
+    terms: list[str] = []
+    for item in (s.strip() for s in refs_or_terms):
+        if not item:
+            continue
+        (explicit if _MPL_REF.match(item) else terms).append(item)
+
+    unresolved: list[str] = []
+    primaries: list[tuple[int | None, CodifiedRef]] = []  # (score, ref)
+    seen_primary: set[str] = set()
+
+    # Caller-chosen handles first; never dropped under budget.
+    for ref_str in explicit:
+        ref = get_codified(db, ref_str)
+        if ref is None:
+            unresolved.append(ref_str)
+            continue
+        key = ref_str  # frame-scoped handles are distinct from full refs
+        if key in seen_primary:
+            continue
+        seen_primary.add(key)
+        primaries.append((None, ref))
+
+    explicit_count = len(primaries)
+
+    # Term resolution: top match per term -> primary; rest -> alternatives.
+    alternatives: list[BundleAlternative] = []
+    seen_alt: set[str] = set()
+    for term in terms:
+        matches = search_terms(db, [term], filters=filters, limit=limit_per_term)
+        if not matches:
+            unresolved.append(term)
+            continue
+        top, rest = matches[0], matches[1:]
+        if top.mpl_label not in seen_primary:
+            ref = get_codified(db, top.mpl_label)
+            if ref is not None:
+                seen_primary.add(top.mpl_label)
+                primaries.append((top.score, ref))
+        for m in rest:
+            if m.mpl_label in seen_primary or m.mpl_label in seen_alt:
+                continue
+            seen_alt.add(m.mpl_label)
+            alternatives.append(BundleAlternative(
+                mpl_label=m.mpl_label,
+                canonical_term=m.canonical_term,
+                score=m.score,
+            ))
+
+    degradations: list[str] = []
+    provenance = True
+    closure_text_cap = 160
+    max_alternatives: int | None = None
+
+    def _assemble() -> tuple[list[CodifiedRef], str, int]:
+        refs = [ref for _, ref in primaries]
+        closure = _reference_closure(db, refs)
+        shown_alts = (
+            alternatives if max_alternatives is None
+            else alternatives[:max_alternatives]
+        )
+        text = _render_bundle_text(
+            refs, closure, shown_alts,
+            ctx_descriptions=ctx_descriptions,
+            provenance=provenance,
+            closure_text_cap=closure_text_cap,
+        )
+        return closure, text, estimate_tokens(text)
+
+    closure, text, tokens = _assemble()
+
+    # Degradation ladder — each step re-renders and re-measures.
+    if tokens > token_budget and len(alternatives) > 3:
+        max_alternatives = 3
+        degradations.append("alternatives_capped")
+        closure, text, tokens = _assemble()
+
+    if tokens > token_budget:
+        provenance = False
+        degradations.append("provenance_dropped")
+        closure, text, tokens = _assemble()
+
+    # Trim term-derived primaries (lowest score first); explicit handles
+    # and the final remaining primary are never dropped.
+    while tokens > token_budget and len(primaries) > max(1, explicit_count):
+        scored = [
+            (i, score) for i, (score, _) in enumerate(primaries)
+            if score is not None
+        ]
+        if not scored:
+            break
+        drop_i = min(scored, key=lambda pair: pair[1])[0]
+        _, dropped = primaries.pop(drop_i)
+        alternatives.insert(0, BundleAlternative(
+            mpl_label=dropped.mpl_label,
+            canonical_term=dropped.canonical_term,
+            score=0,
+        ))
+        if "breadth_trimmed" not in degradations:
+            degradations.append("breadth_trimmed")
+        closure, text, tokens = _assemble()
+
+    if tokens > token_budget and closure_text_cap > 80:
+        closure_text_cap = 80
+        degradations.append("closure_hardened")
+        closure, text, tokens = _assemble()
+
+    shown_alts = (
+        alternatives if max_alternatives is None
+        else alternatives[:max_alternatives]
+    )
+    return Bundle(
+        entries=[ref for _, ref in primaries],
+        closure=closure,
+        alternatives=shown_alts,
+        unresolved=unresolved,
+        token_estimate=tokens,
+        token_budget=token_budget,
+        degradations=degradations,
+        as_text=text,
+    )
+
+
+def _reference_closure(
+    db: Database, primaries: list[CodifiedRef]
+) -> list[CodifiedRef]:
+    """Transitively expand references of `primaries` (ADR-023).
+
+    Entry-level granularity (Q5), visited-set cycle guard, BFS so
+    nearer references render first. Dangling references (a label cited
+    in text but absent from the DB) are skipped silently — they cannot
+    be resolved, so they cannot be closed over.
+    """
+    visited: set[str] = {ref.mpl_label for ref in primaries}
+    queue: list[str] = []
+    for ref in primaries:
+        for cited in ref.references:
+            if cited not in visited:
+                visited.add(cited)
+                queue.append(cited)
+
+    closure: list[CodifiedRef] = []
+    i = 0
+    while i < len(queue):
+        label = queue[i]
+        i += 1
+        ref = get_codified(db, label)
+        if ref is None:
+            continue
+        closure.append(ref)
+        for cited in ref.references:
+            if cited not in visited:
+                visited.add(cited)
+                queue.append(cited)
+    return closure
+
+
+def _render_bundle_text(
+    primaries: list[CodifiedRef],
+    closure: list[CodifiedRef],
+    alternatives: list[BundleAlternative],
+    *,
+    ctx_descriptions: dict[str, str],
+    provenance: bool,
+    closure_text_cap: int,
+) -> str:
+    """The bundle's compact NL rendering (same idiom as chat context)."""
+    lines: list[str] = [
+        "CODIFIED MEANINGS",
+        "",
+        "Frames are co-equal: when an entry carries several, choose the "
+        "frame(s) your question implies; cite the MPL label (and frame "
+        "name) you keep.",
+        "",
+    ]
+    for ref in primaries:
+        lines.extend(render_codified_lines(
+            ref,
+            context_descriptions=ctx_descriptions,
+            provenance=provenance,
+        ))
+        lines.append("")
+
+    if closure:
+        lines.append("REFERENCED TERMS (closure — cited by the entries above)")
+        lines.append("")
+        for ref in closure:
+            lines.extend(render_codified_lines(
+                ref, compact=True, closure_text_cap=closure_text_cap,
+            ))
+        lines.append("")
+
+    if alternatives:
+        alts = ", ".join(
+            f"{a.mpl_label} ({a.canonical_term})" for a in alternatives
+        )
+        lines.append(f"OTHER CANDIDATE MATCHES: {alts}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"

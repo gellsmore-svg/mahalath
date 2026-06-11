@@ -1,7 +1,8 @@
 # Mahalath Retrieval Layer — Design Spec
 
 Last updated: 2026-06-11
-Status: accepted design. S-A/S-B landed (S2.30/S2.31); S-C..S-E pending.
+Status: accepted design. S-A/S-B/S-C landed (S2.30/S2.31/S2.33);
+S-D/S-E pending.
 Related: ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023.
 
 ## Purpose
@@ -221,9 +222,23 @@ becomes one consumer of retrieval rather than a parallel implementation.
    subtree` CLI; `retrieval.subtree()` read view. `get_codified`/branch
    filter now read the stored path, falling back to a live walk for
    un-backfilled legacy entries.
-3. **S-C — `build_bundle` + `/api/retrieve` HTTP.** Token-budgeted
-   bundles, JSON + compact NL; reference-closure expansion (ADR-023)
-   with cycle guard; wire chat's context block through it.
+3. **S-C — `build_bundle` + `/api/retrieve` HTTP. DONE (S2.33).**
+   `build_bundle(db, refs_or_terms, *, token_budget=1500, filters=None,
+   limit_per_term=5)` — explicit MPL refs (incl. frame-scoped handles)
+   are never dropped; terms resolve via `search_terms` (top match →
+   primary with ALL frames, rest → ranked alternatives). Reference
+   closure is transitive + cycle-safe (entry-level, Q5). Budget is a
+   chars/4 estimate (Q2) applied as a recorded degradation ladder:
+   cap alternatives → drop provenance → trim term-derived primaries
+   (floor 1) → harden closure one-liners; the frame set and closure
+   node set are never reduced. One shared text renderer
+   (`render_entry_lines`) backs both `Bundle.as_text` and the chat
+   context block (chat's `_render_entry_for_chat` now delegates to it).
+   Surfaces: `mahalath retrieve` builds the bundle by default
+   (`--budget`, `--format json|text`, `--matches-only` for the ranked
+   list) and `POST /api/retrieve` (`{terms|labels, filters,
+   token_budget, format}`). Note: the spec's draft `context=None` kwarg
+   became the more general `filters: Filters`.
 4. **S-D — `propose_term`** onto the existing undecided/ingestion path;
    optional `consensus_score` capture during debate.
 5. **S-E (optional, later) — Tirzah semantic backend** behind
@@ -242,12 +257,15 @@ becomes one consumer of retrieval rather than a parallel implementation.
 
 ## Open questions
 
-- **Q2.** `token_budget` accounting: rough char/4 estimate in core, or a
-  real tokenizer per adapter? Lean: char-based estimate in core, exact
-  count optional via the active adapter.
+- **Q2 — RESOLVED (2026-06-11, S-C).** Char/4 estimate in core
+  (`estimate_tokens`), per the lean. An exact per-adapter count can be
+  slotted in later without changing callers; `Bundle.token_estimate` is
+  already advisory rather than contractual.
 - **Q3.** Should `build_bundle` ever auto-trigger `propose_term` when a
   term misses, or always leave that to the caller? Lean: caller-driven
-  (retrieval stays read-only by default).
+  (retrieval stays read-only by default). S-C records misses in
+  `Bundle.unresolved` so the caller has what it needs to decide.
+  Finalise in S-D alongside `propose_term`.
 - **Q4.** Does the operator want a stable *external* alias for an MPL
   label (a human-pronounceable handle) without violating ADR-021? If so
   it is an `alias`, not a new key.

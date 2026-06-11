@@ -220,64 +220,43 @@ def _render_entry_for_chat(
     entry: OntologyEntry,
     contexts: dict | None = None,
 ) -> list[str]:
-    """Render an entry for the chat prompt, with definitions grouped by context.
+    """Render an entry for the chat prompt via retrieval's shared renderer.
 
-    `contexts` (optional) is a {context_id → DefinitionContext} map.
-    When given, definitions are grouped by their context_id and each
-    group is labeled with the context name + description so the model
-    sees which frame each definition speaks within. When absent,
-    definitions are listed flat (Stage 1 behaviour).
+    `contexts` (optional) is a {context_id → DefinitionContext} map used
+    to resolve frame names + descriptions. The actual text shaping lives
+    in `retrieval.render_entry_lines` — the ONE renderer — so the chat
+    context block and retrieval bundle text look identical to a
+    downstream model (S-C).
     """
-    lines: list[str] = []
-    lines.append(f"--- {entry.mpl_label}: {entry.canonical_term} ---")
-    parent = entry.parent_label or "(top-level)"
-    lines.append(f"  Parent: {parent}")
-    if entry.is_stale:
-        lines.append(f"  STALE (reasons: {len(entry.stale_reasons)})")
-        for r in entry.stale_reasons[-2:]:
-            note = r.get("note") or ""
-            change_type = r.get("change_type", "?")
-            lines.append(f"    - {change_type}: {note}")
+    from mahalath.retrieval import Meaning, render_entry_lines
 
-    if entry.definitions:
-        if contexts:
-            # Group by context_id; preserve order of first appearance
-            groups: dict[str | None, list] = {}
-            order: list[str | None] = []
-            for d in entry.definitions:
-                cid = d.context_id
-                if cid not in groups:
-                    groups[cid] = []
-                    order.append(cid)
-                groups[cid].append(d)
+    meanings = []
+    ctx_descriptions: dict[str, str] = {}
+    for d in entry.definitions:
+        ctx = contexts.get(d.context_id) if contexts and d.context_id else None
+        if ctx is not None:
+            ctx_descriptions[ctx.name] = ctx.description
+        meanings.append(Meaning(
+            context_id=d.context_id,
+            context_name=ctx.name if ctx else None,
+            description=d.text,
+            model_used=d.model_used,
+            consensus_score=getattr(d, "consensus_score", None),
+            created_at=None,
+        ))
 
-            lines.append(
-                "  Definitions (multiple contexts are co-equal — each speaks "
-                "from its own frame; none supersedes another):"
-            )
-            for cid in order:
-                if cid and cid in contexts:
-                    ctx = contexts[cid]
-                    lines.append(
-                        f"    Context [{ctx.name}] — {ctx.description}"
-                    )
-                else:
-                    lines.append("    Context [unspecified]")
-                for d in groups[cid]:
-                    attrib = d.model_used or "?"
-                    lines.append(f"      [{attrib}] {d.text}")
-        else:
-            lines.append("  Definitions (most recent first):")
-            for d in reversed(entry.definitions):
-                attrib = d.model_used or "?"
-                lines.append(f"    [{attrib}] {d.text}")
-    if entry.references_labels:
-        lines.append(
-            f"  References: {', '.join(entry.references_labels[:8])}"
-        )
-    if entry.aliases:
-        lines.append(f"  Aliases: {', '.join(entry.aliases[:5])}")
-    return lines
+    return render_entry_lines(
+        mpl_label=entry.mpl_label,
+        canonical_term=entry.canonical_term,
+        meanings=meanings,
+        parent_label=entry.parent_label,
+        path=entry.path or None,
+        references=entry.references_labels,
+        aliases=entry.aliases,
+        is_stale=entry.is_stale,
+        stale_reasons=entry.stale_reasons,
+        context_descriptions=ctx_descriptions or None,
+    )
 
 
 # --- Citation extraction --------------------------------------------------

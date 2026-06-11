@@ -163,7 +163,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     retrieve_parser.add_argument(
         "--matches-only", action="store_true",
-        help="Print ranked matches without expanding each to its codified ref.",
+        help="Print ranked matches without building the bundle.",
+    )
+    retrieve_parser.add_argument(
+        "--budget", type=int, default=1500,
+        help="Token budget for the bundle (chars/4 estimate; default 1500).",
+    )
+    retrieve_parser.add_argument(
+        "--format", choices=("json", "text"), default="json",
+        help="Bundle output: full JSON (default) or the compact NL text.",
     )
 
     subcommands.add_parser(
@@ -419,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
             status=args.status,
             min_confidence=args.min_confidence,
             matches_only=args.matches_only,
+            budget=args.budget,
+            out_format=args.format,
         )
 
     if args.command == "list-proposals":
@@ -1652,9 +1662,11 @@ def _retrieve(
     status: str | None,
     min_confidence: float | None,
     matches_only: bool,
+    budget: int,
+    out_format: str,
 ) -> int:
     from mahalath.db import close_all, ensure_indexes, get_database
-    from mahalath.retrieval import Filters, get_codified, search_terms
+    from mahalath.retrieval import Filters, build_bundle, search_terms
 
     try:
         db = get_database(config)
@@ -1670,20 +1682,27 @@ def _retrieve(
             status=status,
             min_confidence=min_confidence,
         )
-        matches = search_terms(db, terms, filters=filters, limit=limit)
-        payload: dict[str, Any] = {
-            "ok": True,
-            "terms": terms,
-            "match_count": len(matches),
-            "matches": [m.to_dict() for m in matches],
-        }
-        if not matches_only:
-            payload["codified"] = [
-                ref.to_dict()
-                for ref in (get_codified(db, m.mpl_label) for m in matches)
-                if ref is not None
-            ]
-        print(json.dumps(payload, indent=2))
+        if matches_only:
+            matches = search_terms(db, terms, filters=filters, limit=limit)
+            print(json.dumps({
+                "ok": True,
+                "terms": terms,
+                "match_count": len(matches),
+                "matches": [m.to_dict() for m in matches],
+            }, indent=2))
+            return 0
+
+        bundle = build_bundle(
+            db, terms, token_budget=budget, filters=filters,
+            limit_per_term=limit,
+        )
+        if out_format == "text":
+            print(bundle.as_text)
+        else:
+            print(json.dumps(
+                {"ok": True, "terms": terms, "bundle": bundle.to_dict()},
+                indent=2,
+            ))
         return 0
     finally:
         close_all()

@@ -644,6 +644,47 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
             "duration_ms": response.duration_ms,
         })
 
+    @app.post("/api/retrieve")
+    def retrieve_api(
+        request: Request, payload: dict = Body(default_factory=dict)
+    ) -> JSONResponse:
+        """Prompt-ready codified bundle for an orchestrating LLM (S-C).
+
+        Body: {"terms": [...], "labels": [...], "filters": {branch,
+        context, status, min_confidence}, "token_budget": N,
+        "format": "json"|"text"}. Labels accept frame-scoped handles
+        ("MPL-004#structural"). Returns the bundle (all frames per
+        entry, ADR-022; reference-closed, ADR-023).
+        """
+        from mahalath.retrieval import Filters, build_bundle
+
+        config: AppConfig = request.app.state.config
+        terms = [str(t) for t in (payload.get("terms") or [])]
+        labels = [str(t) for t in (payload.get("labels") or [])]
+        refs_or_terms = labels + terms
+        if not refs_or_terms:
+            raise HTTPException(400, "terms or labels are required")
+
+        raw_filters = payload.get("filters") or {}
+        min_conf = raw_filters.get("min_confidence")
+        filters = Filters(
+            branch=raw_filters.get("branch"),
+            context_name=raw_filters.get("context"),
+            status=raw_filters.get("status"),
+            min_confidence=float(min_conf) if min_conf is not None else None,
+        )
+        token_budget = int(payload.get("token_budget", 1500))
+        out_format = str(payload.get("format", "json"))
+
+        db = get_database(config)
+        ensure_indexes(db)  # the $text index backs fuzzy matching
+        bundle = build_bundle(
+            db, refs_or_terms, token_budget=token_budget, filters=filters,
+        )
+        if out_format == "text":
+            return JSONResponse({"ok": True, "text": bundle.as_text})
+        return JSONResponse({"ok": True, "bundle": bundle.to_dict()})
+
     @app.post("/api/chat/apply_action")
     def chat_apply_action(
         request: Request, payload: dict = Body(default_factory=dict)
