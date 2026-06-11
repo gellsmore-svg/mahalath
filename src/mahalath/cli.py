@@ -231,19 +231,39 @@ def main(argv: list[str] | None = None) -> int:
             help="Optional operator note recorded with the decision.",
         )
 
-    subcommands.add_parser(
+    list_contexts_parser = subcommands.add_parser(
         "list-contexts",
-        help="List definition contexts (frames within which definitions are interpreted).",
+        help="List definition contexts: meaning frames and intent tags.",
+    )
+    list_contexts_parser.add_argument(
+        "--kind", choices=("frame", "intent"), default=None,
+        help="Restrict to one taxonomy (default: both).",
     )
     add_context_parser = subcommands.add_parser(
         "add-context",
-        help="Define a new definition context (e.g., theological, structural).",
+        help="Define a new definition context (e.g., theological, structural) "
+        "or, with --kind intent, an intent tag (e.g., teach, persuade).",
     )
     add_context_parser.add_argument("name", help="Short tag, e.g. 'theological'.")
     add_context_parser.add_argument(
         "--description",
         required=True,
         help="One-sentence description of what definitions in this context mean.",
+    )
+    add_context_parser.add_argument(
+        "--kind", choices=("frame", "intent"), default="frame",
+        help="Taxonomy this row belongs to: a meaning frame (default) or "
+        "an intent tag (ADR-024).",
+    )
+    seed_intents_parser = subcommands.add_parser(
+        "seed-intents",
+        help="Insert the standard intent taxonomy (teach, persuade, "
+        "reassure, ...) idempotently. Operator edits afterwards via "
+        "add-context --kind intent.",
+    )
+    seed_intents_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would be inserted without writing.",
     )
     show_context_parser = subcommands.add_parser(
         "show-context",
@@ -506,10 +526,16 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "list-contexts":
-        return _list_contexts(config)
+        return _list_contexts(config, kind=args.kind)
 
     if args.command == "add-context":
-        return _add_context(config, name=args.name, description=args.description)
+        return _add_context(
+            config, name=args.name, description=args.description,
+            kind=args.kind,
+        )
+
+    if args.command == "seed-intents":
+        return _seed_intents(config, dry_run=args.dry_run)
 
     if args.command == "show-context":
         return _show_context(config, identifier=args.identifier)
@@ -856,11 +882,12 @@ def _run_pipeline_on_document(
         }
 
     # Snapshot the definition contexts once per document so each debate
-    # call sees the live frame options.
+    # call sees the live frame options. Frames only (ADR-024) — intent
+    # tags are not meaning frames.
     from mahalath.db.repositories import DefinitionContextRepository
     available_contexts = [
         {"name": c.name, "description": c.description}
-        for c in DefinitionContextRepository(db).all()
+        for c in DefinitionContextRepository(db).all(kind="frame")
     ]
 
     debated: list[dict[str, Any]] = []
@@ -1238,7 +1265,7 @@ def _proposal_summary(p) -> dict[str, Any]:
     }
 
 
-def _list_contexts(config: AppConfig) -> int:
+def _list_contexts(config: AppConfig, *, kind: str | None = None) -> int:
     from mahalath.db import close_all, get_database, DefinitionContextRepository
 
     try:
@@ -1248,13 +1275,15 @@ def _list_contexts(config: AppConfig) -> int:
         return 4
 
     try:
-        contexts = DefinitionContextRepository(db).all()
+        contexts = DefinitionContextRepository(db).all(kind=kind)
         payload = {
             "count": len(contexts),
+            "kind_filter": kind,
             "contexts": [
                 {
                     "context_id": c.context_id,
                     "name": c.name,
+                    "kind": c.kind,
                     "description": c.description,
                     "created_by": c.created_by,
                     "created_at": str(c.created_at),
@@ -1268,7 +1297,9 @@ def _list_contexts(config: AppConfig) -> int:
         close_all()
 
 
-def _add_context(config: AppConfig, *, name: str, description: str) -> int:
+def _add_context(
+    config: AppConfig, *, name: str, description: str, kind: str = "frame"
+) -> int:
     from mahalath.db import close_all, ensure_indexes, get_database, DefinitionContextRepository
     from mahalath.db.models import DefinitionContext
 
@@ -1285,20 +1316,44 @@ def _add_context(config: AppConfig, *, name: str, description: str) -> int:
         if existing is not None:
             print(
                 f"mahalath: a context named {name!r} already exists "
-                f"(id={existing.context_id}).",
+                f"(kind={existing.kind}, id={existing.context_id}). Names "
+                "are one namespace across frames and intents.",
                 file=sys.stderr,
             )
             return 13
         ctx = DefinitionContext(
-            name=name, description=description, created_by="operator",
+            name=name, description=description, kind=kind,
+            created_by="operator",
         )
         repo.insert(ctx)
         print(json.dumps({
             "ok": True,
             "context_id": ctx.context_id,
             "name": ctx.name,
+            "kind": ctx.kind,
             "description": ctx.description,
         }, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _seed_intents(config: AppConfig, *, dry_run: bool) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.intents import seed_intents
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        result = seed_intents(db, dry_run=dry_run)
+        print(json.dumps(
+            {"ok": True, "dry_run": dry_run, **result.to_dict()}, indent=2,
+        ))
         return 0
     finally:
         close_all()

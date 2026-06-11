@@ -17,7 +17,7 @@ ID conventions:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -60,7 +60,7 @@ class DocumentRecord(_MahalathModel):
 
 
 class DefinitionContext(_MahalathModel):
-    """A frame within which definitions are interpreted.
+    """A frame within which definitions are interpreted — or an intent tag.
 
     Real ontologies are polysemous: the substrate is legitimately the
     "generic underlying medium" (structural frame), "the grammatical
@@ -70,14 +70,26 @@ class DefinitionContext(_MahalathModel):
     with a name and a description so the chat can present each
     correctly.
 
+    `kind` (I-A, ADR-024) discriminates the two governed taxonomies
+    sharing this collection:
+
+      frame  — a meaning frame; referenced by `definitions[].context_id`.
+               Legacy rows without the field read as frames.
+      intent — an illocution tag (teach, persuade, reassure, …);
+               referenced by `definitions[].intent_tags`. Intent is
+               deployment metadata about the source, NEVER a meaning
+               frame, never an entry axis, never part of a label.
+
     `context_id` is the stable key; `name` is the short tag the model
     sees ("theological"); `description` is what that tag means in
-    this corpus.
+    this corpus. Names are unique across BOTH kinds (one namespace),
+    so a name reference is always unambiguous.
     """
 
     context_id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
     description: str
+    kind: Literal["frame", "intent"] = "frame"
     created_at: datetime = Field(default_factory=_utcnow)
     created_by: str | None = None
     schema_version: int = SCHEMA_VERSION
@@ -98,6 +110,24 @@ class DefinitionVersion(_MahalathModel):
     entry-level `confidence`, which can drift as the entry evolves.
     None for operator-authored, REM-redefine (single-model), and
     legacy definitions.
+
+    Intent annotation (I-A, ADR-024/025) — deployment metadata about
+    the source, never the term's semantics:
+
+      `intent_tags`        — context_ids of `kind="intent"` taxonomy
+                             rows (why the corpus deploys this concept).
+                             Model-sourced tags are stored only on
+                             multi-pass unanimity (I-B); operator tags
+                             are unrestricted.
+      `intentionality`     — ordinal estimate of how deliberately the
+                             source expression is constructed
+                             (low | medium | high). Never a float
+                             (ADR-025).
+      `intent_confidence`  — 0–10 confidence that the intent
+                             attribution is correct. Distinct from
+                             `consensus_score` (definitional agreement)
+                             and from any future effectiveness measure
+                             (perlocution; out of scope, ADR-026).
     """
 
     text: str
@@ -106,6 +136,9 @@ class DefinitionVersion(_MahalathModel):
     decision_log_id: str | None = None
     context_id: str | None = None
     consensus_score: float | None = None
+    intent_tags: list[str] = Field(default_factory=list)
+    intentionality: Literal["low", "medium", "high"] | None = None
+    intent_confidence: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

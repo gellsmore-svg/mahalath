@@ -413,10 +413,13 @@ def backfill_definition_contexts(
 
     entry_repo = OntologyEntryRepository(db)
     ctx_repo = DefinitionContextRepository(db)
+    # Frames only — definitions are tagged with meaning frames, never
+    # intent-taxonomy rows (ADR-024).
+    frames = ctx_repo.all(kind="frame")
     available_contexts = [
-        {"name": c.name, "description": c.description} for c in ctx_repo.all()
+        {"name": c.name, "description": c.description} for c in frames
     ]
-    contexts_by_name = {c.name: c for c in ctx_repo.all()}
+    contexts_by_name = {c.name: c for c in frames}
     if not available_contexts:
         # Nothing to tag against.
         return BackfillResult()
@@ -1091,7 +1094,11 @@ def redefine_stale_entry(
     context_id: str | None = None
     if chosen_name:
         from mahalath.db.repositories import DefinitionContextRepository
-        ctx = DefinitionContextRepository(db).get_by_name(chosen_name)
+        # Frames only (ADR-024): never tag a definition's frame with an
+        # intent-taxonomy row.
+        ctx = DefinitionContextRepository(db).get_by_name(
+            chosen_name, kind="frame"
+        )
         if ctx is not None:
             context_id = ctx.context_id
 
@@ -1133,11 +1140,11 @@ def redefine_pending_stale(
     style_overlay = load_style_overlay(config)
 
     # Snapshot the contexts table once so each redefine call sees them
-    # without re-querying.
+    # without re-querying. Frames only (ADR-024).
     from mahalath.db.repositories import DefinitionContextRepository
     available_contexts = [
         {"name": c.name, "description": c.description}
-        for c in DefinitionContextRepository(db).all()
+        for c in DefinitionContextRepository(db).all(kind="frame")
     ]
 
     result = RedefineResult(items_at_start=len(stale))

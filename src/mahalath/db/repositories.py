@@ -103,15 +103,35 @@ class DefinitionContextRepository:
         doc = self._col.find_one({"context_id": context_id})
         return DefinitionContext.model_validate(doc) if doc else None
 
-    def get_by_name(self, name: str) -> DefinitionContext | None:
-        doc = self._col.find_one({"name": name})
-        return DefinitionContext.model_validate(doc) if doc else None
+    def get_by_name(
+        self, name: str, *, kind: str | None = None
+    ) -> DefinitionContext | None:
+        """Look up by name; `kind` restricts to "frame" or "intent".
 
-    def all(self) -> list[DefinitionContext]:
-        return [
+        Filtering happens after validation so legacy documents without
+        the `kind` field read as frames (the model default).
+        """
+        doc = self._col.find_one({"name": name})
+        if not doc:
+            return None
+        ctx = DefinitionContext.model_validate(doc)
+        if kind is not None and ctx.kind != kind:
+            return None
+        return ctx
+
+    def all(self, *, kind: str | None = None) -> list[DefinitionContext]:
+        """All contexts, oldest first; `kind` restricts to one taxonomy.
+
+        Filtering happens after validation so legacy documents without
+        the `kind` field read as frames (the model default).
+        """
+        items = [
             DefinitionContext.model_validate(doc)
             for doc in self._col.find().sort("created_at", 1)
         ]
+        if kind is None:
+            return items
+        return [c for c in items if c.kind == kind]
 
 
 class OntologyTreeRepository:

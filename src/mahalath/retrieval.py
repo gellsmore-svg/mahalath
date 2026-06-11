@@ -291,7 +291,9 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
         return None
 
     ctx_repo = DefinitionContextRepository(db)
-    ctx_by_id = {c.context_id: c for c in ctx_repo.all()}
+    # Frames only: a `MPL-x#<frame>` handle names a meaning frame, never
+    # an intent-taxonomy row (ADR-024).
+    ctx_by_id = {c.context_id: c for c in ctx_repo.all(kind="frame")}
     ctx_by_name = {c.name: c for c in ctx_by_id.values()}
 
     # Resolve a frame filter (by id or readable name) to a context_id.

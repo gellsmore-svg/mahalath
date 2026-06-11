@@ -369,9 +369,10 @@ def answer_question(
         focus_label=focus_label,
     )
     # Pull the definition_contexts table so the prompt can group
-    # definitions by frame.
+    # definitions by frame (frames only — intent tags are a separate
+    # taxonomy, ADR-024).
     from mahalath.db.repositories import DefinitionContextRepository
-    contexts_list = DefinitionContextRepository(db).all()
+    contexts_list = DefinitionContextRepository(db).all(kind="frame")
     contexts_map = {c.context_id: c for c in contexts_list}
 
     prompt = build_chat_prompt(

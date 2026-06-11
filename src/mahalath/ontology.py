@@ -264,9 +264,13 @@ def _model_used_in(result: DebateResult) -> str | None:
 
 
 def _resolve_context_id(db: Database, context_name: str | None) -> str | None:
-    """Map a context name (e.g., 'structural') to its DefinitionContext id."""
+    """Map a context name (e.g., 'structural') to its DefinitionContext id.
+
+    Frames only: a debate's context_name must never resolve to an
+    intent-taxonomy row (ADR-024 — intent is not a meaning frame).
+    """
     if not context_name:
         return None
     from mahalath.db.repositories import DefinitionContextRepository
-    ctx = DefinitionContextRepository(db).get_by_name(context_name)
+    ctx = DefinitionContextRepository(db).get_by_name(context_name, kind="frame")
     return ctx.context_id if ctx is not None else None

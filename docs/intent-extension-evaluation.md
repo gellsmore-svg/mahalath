@@ -209,9 +209,18 @@ lives there. Kept here for the drafting context.
 Sequenced **after retrieval S-C** — intent-aware retrieval composes
 with `build_bundle`, so the bundle layer should exist first.
 
-1. **I-A — schema + taxonomy.** `kind` on DefinitionContext;
-   operator-seeded intent taxonomy; `intent_tags` / `intentionality` /
-   `intent_confidence` on DefinitionVersion; accept ADR-024/025/026.
+1. **I-A — schema + taxonomy. DONE (S2.35).** `kind: "frame"|"intent"`
+   on DefinitionContext (legacy rows read as frames); `intent_tags` /
+   ordinal `intentionality` / `intent_confidence` on DefinitionVersion;
+   new `intents.py` with the STANDARD_INTENTS starter vocabulary
+   (8 tags distilled from the discussion doc), idempotent
+   `seed-intents` CLI, and `resolve_intent_tag` (rejects frames — the
+   I-B validation gate). All frame paths (debate context resolution,
+   backfill, redefine, chat grouping, `MPL-x#frame` handles) filter to
+   `kind="frame"`, so intent rows cannot contaminate frame selection.
+   Seeded into `mahalath_dev` for operator review; the other DBs get
+   seeded at I-B kickoff once the vocabulary is confirmed.
+   ADR-024/025/026 accepted 2026-06-11.
 2. **I-B — ingestion.** Debate output contract extension + scoped
    pipeline backfill + `backfill-intents` CLI (dry-run default).
 3. **I-C — surfaces.** Retrieval filter + `Meaning` fields + web UI
