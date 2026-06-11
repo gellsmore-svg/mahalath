@@ -152,6 +152,10 @@ def _write_accepted(
                 model_used=_model_used_in(result),
                 decision_log_id=result.decision_log_id,
                 context_id=context_id,
+                # Multi-agent agreement for THIS definition (min(pc, se)
+                # at accept time); the entry-level confidence can drift
+                # later, this snapshot doesn't.
+                consensus_score=result.final_confidence,
             )
         ],
         source_document_ids=[result.source_document_id],

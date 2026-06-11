@@ -349,6 +349,7 @@ def append_operator_definition(
                     "model_used": "operator",
                     "decision_log_id": None,
                     "context_id": context_id,
+                    "consensus_score": None,  # operator-authored: no debate
                     "created_at": now,
                 }
             },
@@ -1105,6 +1106,9 @@ def redefine_stale_entry(
                     "model_used": "rem_redefine",
                     "decision_log_id": None,
                     "context_id": context_id,
+                    # Single-model verdict, not multi-agent agreement —
+                    # consensus_score is reserved for debate output.
+                    "consensus_score": None,
                     "created_at": now,
                 }
             },

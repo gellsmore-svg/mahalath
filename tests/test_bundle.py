@@ -242,3 +242,145 @@ def test_render_entry_lines_compact_truncates() -> None:
     assert lines[0] == "--- MPL-001: alpha ---"
     assert len(lines[1]) <= 100 + len("  [structural] ") + 1
     assert lines[1].endswith("…")
+
+
+# --- propose_term (S-D) -----------------------------------------------------
+
+
+from mahalath.retrieval import propose_term  # noqa: E402
+
+
+def test_propose_term_existing_match_no_enqueue(mongo_db) -> None:
+    repo = OntologyEntryRepository(mongo_db)
+    _entry(repo, "MPL-001", "substrate")
+    template = propose_term(mongo_db, "substrate")
+    assert template.status == "existing"
+    assert template.enqueued is False
+    assert template.matches[0].mpl_label == "MPL-001"
+    assert mongo_db.undecided_queue.count_documents({}) == 0
+
+
+def test_propose_term_enqueues_with_resolving_decision_log(mongo_db) -> None:
+    template = propose_term(
+        mongo_db, "morphogenesis",
+        context="Morphogenesis is the emergence of stable form.",
+    )
+    assert template.status == "enqueued"
+    assert template.enqueued is True
+
+    row = mongo_db.undecided_queue.find_one({"term": "morphogenesis"})
+    assert row is not None
+    assert row["reason"] == "proposed_term"
+    assert row["context"] == "Morphogenesis is the emergence of stable form."
+    # The queue row's decision_log_id resolves, like every other row.
+    log = mongo_db.decision_log.find_one(
+        {"decision_log_id": template.decision_log_id}
+    )
+    assert log is not None
+    assert log["outcome"] == "undecided"
+
+
+def test_propose_term_near_hint_folded_into_context(mongo_db) -> None:
+    repo = OntologyEntryRepository(mongo_db)
+    _entry(repo, "MPL-001", "substrate")
+    template = propose_term(
+        mongo_db, "morphogenesis",
+        context="Emergence of stable form.",
+        near="MPL-001",
+    )
+    row = mongo_db.undecided_queue.find_one({"term": "morphogenesis"})
+    assert 'related to "substrate"' in row["context"]
+    assert template.near == "MPL-001"
+
+
+def test_propose_term_already_queued_no_duplicate(mongo_db) -> None:
+    first = propose_term(mongo_db, "morphogenesis", context="ctx")
+    second = propose_term(mongo_db, "Morphogenesis")  # case-insensitive
+    assert second.status == "already_queued"
+    assert second.decision_log_id == first.decision_log_id
+    assert mongo_db.undecided_queue.count_documents({}) == 1
+
+
+def test_propose_term_dry_run_writes_nothing(mongo_db) -> None:
+    template = propose_term(mongo_db, "morphogenesis", enqueue=False)
+    assert template.status == "template_only"
+    assert mongo_db.undecided_queue.count_documents({}) == 0
+    assert mongo_db.decision_log.count_documents({}) == 0
+
+
+def test_propose_term_context_less_warns_in_note(mongo_db) -> None:
+    template = propose_term(mongo_db, "morphogenesis")
+    assert template.status == "enqueued"
+    assert "WITHOUT context" in template.note
+
+
+def test_propose_term_empty_raises(mongo_db) -> None:
+    import pytest
+    with pytest.raises(ValueError):
+        propose_term(mongo_db, "   ")
+
+
+def test_proposed_term_flows_through_rem_review(mongo_config, mongo_db) -> None:
+    """The S-D integration claim: a proposed term with context is picked
+    up by the EXISTING REM re-review and debated into the ontology."""
+    import json as _json
+    from mahalath.adapters import MockAdapter
+    from mahalath.debate import (
+        SPEAKER_TAG_PRECISION_CRITIC,
+        SPEAKER_TAG_SYNTHESIS_EXPLORER,
+    )
+    from mahalath.rem import rem_review
+
+    propose_term(
+        mongo_db, "morphogenesis",
+        context="Morphogenesis is the emergence of stable form.",
+    )
+
+    adapter = MockAdapter(responses={
+        SPEAKER_TAG_PRECISION_CRITIC: _json.dumps({
+            "definition": "The emergence of stable form.",
+            "critique": "none", "confidence": 9.0,
+        }),
+        SPEAKER_TAG_SYNTHESIS_EXPLORER: _json.dumps({
+            "definition": "The emergence of stable form within the weave.",
+            "rationale": "agreed", "confidence": 9.0,
+        }),
+    })
+    result = rem_review(mongo_config, mongo_db, adapter, max_items=5)
+    assert result.items_accepted == 1
+    assert mongo_db.undecided_queue.count_documents({}) == 0
+    entry = OntologyEntryRepository(mongo_db).get(result.accepted_labels[0])
+    assert entry.canonical_term == "morphogenesis"
+    # And the definition carries the per-definition consensus score (S-D).
+    assert entry.definitions[0].consensus_score == 9.0
+
+
+# --- consensus_score capture (S-D) ------------------------------------------
+
+
+def test_persist_writes_consensus_score(mongo_db) -> None:
+    from mahalath.config import RuntimeConfig
+    from mahalath.debate import DebateResult
+    from mahalath.ontology import persist_debate_result
+
+    result = DebateResult(
+        decision_log_id="dl-cs", term="weave", source_document_id="doc-1",
+        outcome="accepted", final_definition="A braid of threads.",
+        final_confidence=8.5, iterations_used=2,
+    )
+    out = persist_debate_result(result, mongo_db, RuntimeConfig())
+    entry = OntologyEntryRepository(mongo_db).get(out.mpl_label)
+    assert entry.definitions[0].consensus_score == 8.5
+    # Entry-level confidence matches at creation but is a separate field.
+    assert entry.confidence == 8.5
+
+
+def test_operator_definition_has_no_consensus_score(mongo_db) -> None:
+    from mahalath.staleness import append_operator_definition
+
+    repo = OntologyEntryRepository(mongo_db)
+    _entry(repo, "MPL-001", "weave")
+    append_operator_definition(mongo_db, "MPL-001", "Operator's wording.")
+    entry = repo.get("MPL-001")
+    assert entry.definitions[-1].model_used == "operator"
+    assert entry.definitions[-1].consensus_score is None

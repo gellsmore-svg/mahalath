@@ -241,7 +241,7 @@ def _render_entry_for_chat(
             context_name=ctx.name if ctx else None,
             description=d.text,
             model_used=d.model_used,
-            consensus_score=getattr(d, "consensus_score", None),
+            consensus_score=d.consensus_score,
             created_at=None,
         ))
 

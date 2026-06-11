@@ -1,8 +1,8 @@
 # Mahalath Retrieval Layer — Design Spec
 
 Last updated: 2026-06-11
-Status: accepted design. S-A/S-B/S-C landed (S2.30/S2.31/S2.33);
-S-D/S-E pending.
+Status: accepted design. S-A..S-D landed (S2.30/S2.31/S2.33/S2.34);
+S-E (optional Tirzah semantic backend) is the only remaining slice.
 Related: ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023.
 
 ## Purpose
@@ -239,8 +239,27 @@ becomes one consumer of retrieval rather than a parallel implementation.
    list) and `POST /api/retrieve` (`{terms|labels, filters,
    token_budget, format}`). Note: the spec's draft `context=None` kwarg
    became the more general `filters: Filters`.
-4. **S-D — `propose_term`** onto the existing undecided/ingestion path;
-   optional `consensus_score` capture during debate.
+4. **S-D — `propose_term` + `consensus_score`. DONE (S2.34).**
+   `propose_term(db, term, *, context=None, near=None, enqueue=True,
+   min_score=20)` — the module's ONE write path. A confident match
+   (score >= the canonical-term weight) returns `status="existing"`
+   with the matches and writes nothing; otherwise the term is enqueued
+   onto the EXISTING undecided path (minimal DecisionLogEntry so the
+   queue row's id resolves + UndecidedItem with
+   `reason="proposed_term"`), where the unmodified REM re-review
+   debates it like any inconclusive term — provided a `context` snippet
+   was supplied (context-less rows stay operator-only). `near` resolves
+   an MPL label to its canonical term and folds it into the debate
+   context as a semantic hint. Dedup: case-insensitive term check
+   against the queue (`already_queued`); `enqueue=False` dry-runs
+   (`template_only`). Surfaces: `mahalath propose-term <term>
+   [--context --near --dry-run]` + `POST /api/propose_term`.
+   `DefinitionVersion.consensus_score` (ADR-020's second additive
+   field) is written by `_write_accepted` as `min(pc, se)` at accept
+   time — the per-definition agreement snapshot, distinct from the
+   driftable entry-level confidence; None for operator / REM-redefine
+   (single-model) / legacy definitions. Exposed via `Meaning`, glossary
+   JSON, and the chat context conversion.
 5. **S-E (optional, later) — Tirzah semantic backend** behind
    `search_terms` for fuzzy/semantic recall. Cross-project; needs an
    explicit go-ahead (ADR-014).
@@ -261,11 +280,11 @@ becomes one consumer of retrieval rather than a parallel implementation.
   (`estimate_tokens`), per the lean. An exact per-adapter count can be
   slotted in later without changing callers; `Bundle.token_estimate` is
   already advisory rather than contractual.
-- **Q3.** Should `build_bundle` ever auto-trigger `propose_term` when a
-  term misses, or always leave that to the caller? Lean: caller-driven
-  (retrieval stays read-only by default). S-C records misses in
-  `Bundle.unresolved` so the caller has what it needs to decide.
-  Finalise in S-D alongside `propose_term`.
+- **Q3 — RESOLVED (2026-06-11, S-D).** Caller-driven, finalised.
+  `build_bundle` never enqueues; `Bundle.unresolved` is the caller's
+  signal, and `propose_term` (the module's one write path) is the
+  explicit follow-up call — also available as `POST /api/propose_term`
+  for an orchestrating LLM driving `/api/retrieve`.
 - **Q4.** Does the operator want a stable *external* alias for an MPL
   label (a human-pronounceable handle) without violating ADR-021? If so
   it is an `alias`, not a new key.

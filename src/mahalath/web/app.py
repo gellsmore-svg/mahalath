@@ -685,6 +685,35 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
             return JSONResponse({"ok": True, "text": bundle.as_text})
         return JSONResponse({"ok": True, "bundle": bundle.to_dict()})
 
+    @app.post("/api/propose_term")
+    def propose_term_api(
+        request: Request, payload: dict = Body(default_factory=dict)
+    ) -> JSONResponse:
+        """Propose a term the ontology doesn't confidently cover (S-D).
+
+        Body: {"term": str, "context": str?, "near": "MPL-x"?,
+        "dry_run": bool?}. Returns the ProposalTemplate: existing
+        matches when the term is covered, otherwise the enqueued
+        undecided-queue handle. The caller decides when to call this —
+        /api/retrieve never enqueues on its own (retrieval-spec Q3).
+        """
+        from mahalath.retrieval import propose_term
+
+        config: AppConfig = request.app.state.config
+        term = str(payload.get("term", "")).strip()
+        if not term:
+            raise HTTPException(400, "term is required")
+
+        db = get_database(config)
+        ensure_indexes(db)
+        template = propose_term(
+            db, term,
+            context=payload.get("context"),
+            near=payload.get("near"),
+            enqueue=not bool(payload.get("dry_run", False)),
+        )
+        return JSONResponse({"ok": True, **template.to_dict()})
+
     @app.post("/api/chat/apply_action")
     def chat_apply_action(
         request: Request, payload: dict = Body(default_factory=dict)

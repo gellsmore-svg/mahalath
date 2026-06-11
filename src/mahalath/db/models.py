@@ -91,6 +91,13 @@ class DefinitionVersion(_MahalathModel):
     contexts are co-equal — neither overrides the other. Definitions
     with no context_id are treated as frame-unspecified (the Stage 1
     default).
+
+    `consensus_score` (S-D, ADR-020's second additive field) is the
+    multi-agent agreement recorded by the debate that produced THIS
+    definition — `min(pc, se)` at accept time. Distinct from the
+    entry-level `confidence`, which can drift as the entry evolves.
+    None for operator-authored, REM-redefine (single-model), and
+    legacy definitions.
     """
 
     text: str
@@ -98,6 +105,7 @@ class DefinitionVersion(_MahalathModel):
     model_used: str | None = None
     decision_log_id: str | None = None
     context_id: str | None = None
+    consensus_score: float | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -197,11 +205,13 @@ class UndecidedItem(_MahalathModel):
     """A term routed to the undecided queue.
 
     `reason` is one of: below_threshold | iteration_cap | conflict |
-    moderator_block.
+    moderator_block | proposed_term (enqueued via
+    `retrieval.propose_term` without a prior debate — S-D).
 
     `context` holds the source-document snippet that was the input to
-    the original debate, so the REM re-review job can re-run debate
-    with the same input without re-extracting from the document.
+    the original debate (or supplied with the proposal), so the REM
+    re-review job can re-run debate with the same input without
+    re-extracting from the document.
     """
 
     decision_log_id: str

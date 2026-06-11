@@ -279,3 +279,43 @@ def test_api_retrieve_accepts_labels_and_filters(app_client, mongo_db) -> None:
 def test_api_retrieve_requires_input(app_client) -> None:
     r = app_client.post("/api/retrieve", json={})
     assert r.status_code == 400
+
+
+# --- /api/propose_term (S-D) -------------------------------------------------
+
+
+def test_api_propose_term_enqueues(app_client, mongo_db) -> None:
+    r = app_client.post("/api/propose_term", json={
+        "term": "morphogenesis",
+        "context": "Morphogenesis is the emergence of stable form.",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "enqueued"
+    assert mongo_db.undecided_queue.count_documents(
+        {"term": "morphogenesis", "reason": "proposed_term"}
+    ) == 1
+
+
+def test_api_propose_term_existing_match(app_client, mongo_db) -> None:
+    _seed_retrieval_chain(mongo_db)
+    r = app_client.post("/api/propose_term", json={"term": "alpha"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "existing"
+    assert body["matches"][0]["mpl_label"] == "MPL-001"
+    assert mongo_db.undecided_queue.count_documents({}) == 0
+
+
+def test_api_propose_term_dry_run(app_client, mongo_db) -> None:
+    r = app_client.post("/api/propose_term", json={
+        "term": "morphogenesis", "dry_run": True,
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "template_only"
+    assert mongo_db.undecided_queue.count_documents({}) == 0
+
+
+def test_api_propose_term_requires_term(app_client) -> None:
+    r = app_client.post("/api/propose_term", json={})
+    assert r.status_code == 400

@@ -174,6 +174,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Bundle output: full JSON (default) or the compact NL text.",
     )
 
+    propose_term_parser = subcommands.add_parser(
+        "propose-term",
+        help="Propose a term the ontology doesn't confidently cover: "
+        "returns existing matches if covered, otherwise enqueues it onto "
+        "the undecided path for REM re-review / operator decision.",
+    )
+    propose_term_parser.add_argument(
+        "term", help="The human term to propose.",
+    )
+    propose_term_parser.add_argument(
+        "--context", default=None,
+        help="Source snippet supporting the term (makes the queued item "
+        "auto-debatable by REM re-review).",
+    )
+    propose_term_parser.add_argument(
+        "--near", default=None,
+        help="MPL label the term is believed related to (folded into the "
+        "debate context as a hint).",
+    )
+    propose_term_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Report what would happen without enqueueing.",
+    )
+
     subcommands.add_parser(
         "list-ontology", help="List ontology entries."
     )
@@ -412,6 +436,15 @@ def main(argv: list[str] | None = None) -> int:
             skip_hierarchy_review=args.no_hierarchy_review,
             consensus_passes_override=args.consensus_passes,
             skip_context_backfill=args.no_context_backfill,
+        )
+
+    if args.command == "propose-term":
+        return _propose_term(
+            config,
+            term=args.term,
+            context=args.context,
+            near=args.near,
+            dry_run=args.dry_run,
         )
 
     if args.command == "list-ontology":
@@ -1704,6 +1737,37 @@ def _retrieve(
                 indent=2,
             ))
         return 0
+    finally:
+        close_all()
+
+
+def _propose_term(
+    config: AppConfig,
+    *,
+    term: str,
+    context: str | None,
+    near: str | None,
+    dry_run: bool,
+) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.retrieval import propose_term
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)  # the $text index backs the coverage check
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        template = propose_term(
+            db, term, context=context, near=near, enqueue=not dry_run,
+        )
+        print(json.dumps({"ok": True, **template.to_dict()}, indent=2))
+        return 0
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+        return 1
     finally:
         close_all()
 

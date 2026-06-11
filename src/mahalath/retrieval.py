@@ -314,7 +314,7 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
             context_name=ctx.name if ctx else None,
             description=d.text,
             model_used=d.model_used,
-            consensus_score=getattr(d, "consensus_score", None),
+            consensus_score=d.consensus_score,
             created_at=d.created_at.isoformat() if d.created_at else None,
         ))
     if keep_ctx_id is not None and not meanings:
@@ -859,3 +859,157 @@ def _render_bundle_text(
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+# --- propose_term (S-D) -----------------------------------------------------
+
+
+@dataclass
+class ProposalTemplate:
+    """Structured outcome of a propose_term call.
+
+    `status` is one of:
+      existing        — a confident match already covers this term; no
+                        enqueue happened (matches carry the candidates).
+      already_queued  — the term is already in the undecided queue;
+                        decision_log_id points at the existing row.
+      enqueued        — a new undecided-queue row was created; the term
+                        will flow through the normal REM re-review /
+                        operator path like any inconclusive debate.
+      template_only   — no confident match and enqueue=False; nothing
+                        was written (dry-run).
+    """
+
+    term: str
+    status: str
+    matches: list[Match]
+    context: str | None
+    near: str | None
+    enqueued: bool
+    decision_log_id: str | None
+    note: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "term": self.term,
+            "status": self.status,
+            "matches": [m.to_dict() for m in self.matches],
+            "context": self.context,
+            "near": self.near,
+            "enqueued": self.enqueued,
+            "decision_log_id": self.decision_log_id,
+            "note": self.note,
+        }
+
+
+def propose_term(
+    db: Database,
+    term: str,
+    *,
+    context: str | None = None,
+    near: str | None = None,
+    enqueue: bool = True,
+    min_score: int = 20,
+) -> ProposalTemplate:
+    """Propose a term the ontology doesn't confidently cover yet.
+
+    The ONE write path in this module (everything else is a read view).
+    When `search_terms` finds a confident match (score >= `min_score` —
+    the canonical-term word-boundary weight by default), nothing is
+    written and the matches are returned for the caller to use instead.
+    Otherwise the term is enqueued onto the EXISTING undecided path: a
+    minimal DecisionLogEntry (outcome "undecided", so the queue row's
+    decision_log_id resolves like every other) plus an UndecidedItem
+    with reason "proposed_term". REM re-review will pick it up and
+    debate it like any inconclusive term — provided a `context` snippet
+    is supplied (context-less rows are operator-only by design).
+
+    `near` (optional) is an MPL label the proposer believes the term
+    relates to; it is resolved to its canonical term and folded into
+    the debate context as a semantic hint.
+
+    Per Q3 (resolved): `build_bundle` never calls this automatically —
+    callers decide, using `Bundle.unresolved` as their signal.
+    """
+    term = term.strip()
+    if not term:
+        raise ValueError("propose_term requires a non-empty term")
+
+    matches = search_terms(db, [term], limit=5)
+    confident = [m for m in matches if m.score >= min_score]
+    if confident:
+        return ProposalTemplate(
+            term=term, status="existing", matches=matches,
+            context=context, near=near, enqueued=False,
+            decision_log_id=None,
+            note=(
+                f"{len(confident)} confident match(es) already cover this "
+                "term; use the matches instead of proposing."
+            ),
+        )
+
+    existing = db.undecided_queue.find_one(
+        {"term": {"$regex": f"^{re.escape(term)}$", "$options": "i"}}
+    )
+    if existing is not None:
+        return ProposalTemplate(
+            term=term, status="already_queued", matches=matches,
+            context=context, near=near, enqueued=False,
+            decision_log_id=existing.get("decision_log_id"),
+            note="term is already in the undecided queue",
+        )
+
+    if not enqueue:
+        return ProposalTemplate(
+            term=term, status="template_only", matches=matches,
+            context=context, near=near, enqueued=False,
+            decision_log_id=None,
+            note="no confident match; pass enqueue=True to queue it",
+        )
+
+    # Fold the `near` hint into the debate context as a semantic cue
+    # (the debate speaks in terms, not labels — resolve it).
+    debate_context = context
+    if near:
+        near_entry = OntologyEntryRepository(db).get(near)
+        if near_entry is not None:
+            hint = (
+                f"(The proposer suggests this concept is related to "
+                f"\"{near_entry.canonical_term}\".)"
+            )
+            debate_context = f"{context}\n{hint}" if context else hint
+
+    from mahalath.db.models import DecisionLogEntry, UndecidedItem
+    from mahalath.db.repositories import (
+        DecisionLogRepository,
+        UndecidedQueueRepository,
+    )
+
+    log_entry = DecisionLogEntry(
+        term=term,
+        source_document_id="(proposed-via-retrieval)",
+        outcome="undecided",
+    )
+    DecisionLogRepository(db).insert(log_entry)
+    UndecidedQueueRepository(db).insert(UndecidedItem(
+        decision_log_id=log_entry.decision_log_id,
+        term=term,
+        source_document_id="(proposed-via-retrieval)",
+        reason="proposed_term",
+        context=debate_context,
+        last_confidence=None,
+    ))
+
+    note = "enqueued onto the undecided path"
+    if not debate_context:
+        note += (
+            " WITHOUT context — REM re-review skips context-less rows, so "
+            "this item waits for an operator; supply context to make it "
+            "auto-debatable."
+        )
+    return ProposalTemplate(
+        term=term, status="enqueued", matches=matches,
+        context=debate_context, near=near, enqueued=True,
+        decision_log_id=log_entry.decision_log_id,
+        note=note,
+    )

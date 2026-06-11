@@ -300,6 +300,9 @@ def _build_json_payload(
                             ctx_names.get(d.context_id)
                             if d.context_id else None
                         ),
+                        # Multi-agent agreement of the debate that wrote
+                        # this definition (S-D); None for operator/legacy.
+                        "consensus_score": d.consensus_score,
                         "created_at": d.created_at,
                     }
                     for d in ec.entry.definitions
