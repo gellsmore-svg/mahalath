@@ -107,7 +107,11 @@ class OntologyEntry(_MahalathModel):
     `mpl_label` is also written into `_id` at insert time by the
     repository. The hierarchical position lives in `ontology_tree`
     edges; storing `parent_label` here too is a denormalisation for
-    fast reads.
+    fast reads. `path` is the materialised ancestor chain (root-first
+    MPL labels, excluding this entry); maintained on insert and on
+    re-parent so subtree/branch queries avoid `$graphLookup`. A legacy
+    entry with a parent but an empty `path` is simply un-backfilled —
+    `paths.resolved_path` falls back to walking `parent_label`.
 
     `references_labels` lists the other MPL labels mentioned in any
     of this entry's definitions (extracted on write). `is_stale` is
@@ -120,6 +124,7 @@ class OntologyEntry(_MahalathModel):
     canonical_term: str
     aliases: list[str] = Field(default_factory=list)
     parent_label: str | None = None
+    path: list[str] = Field(default_factory=list)
     definitions: list[DefinitionVersion] = Field(default_factory=list)
     relations: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float

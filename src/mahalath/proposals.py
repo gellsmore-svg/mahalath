@@ -52,6 +52,7 @@ from mahalath.db.repositories import (
     ActionProposalRepository,
     OntologyTreeRepository,
 )
+from mahalath.paths import propagate_paths
 
 
 class ProposalError(Exception):
@@ -303,6 +304,7 @@ def _rollback_parent(
                 }
             },
         )
+        propagate_paths(db, child_label)
         return {
             "tree_edge_removed": True,
             "tree_edge_restored": True,
@@ -314,6 +316,7 @@ def _rollback_parent(
         {"_id": child_label},
         {"$set": {"parent_label": None, "updated_at": _utcnow()}},
     )
+    propagate_paths(db, child_label)
     return {
         "tree_edge_removed": True,
         "parent_label_cleared": True,

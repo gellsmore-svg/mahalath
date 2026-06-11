@@ -437,6 +437,10 @@ def _apply_parent(action: ProposeParent, db: Database) -> dict[str, Any]:
             }
         },
     )
+    # Re-materialise the ancestor chain for the moved node and every
+    # descendant beneath it (their paths all shift).
+    from mahalath.paths import propagate_paths
+    propagate_paths(db, action.child_label)
     # A parent change is a structural change; entries that referenced
     # the child may need to re-evaluate against its new ancestor chain.
     if reparenting:

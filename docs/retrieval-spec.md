@@ -1,7 +1,7 @@
 # Mahalath Retrieval Layer — Design Spec
 
-Last updated: 2026-06-10
-Status: accepted design. S-A landed (S2.30); S-B..S-E pending.
+Last updated: 2026-06-11
+Status: accepted design. S-A/S-B landed (S2.30/S2.31); S-C..S-E pending.
 Related: ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023.
 
 ## Purpose
@@ -211,9 +211,16 @@ becomes one consumer of retrieval rather than a parallel implementation.
    reverse-references), the `$text` index, and `mahalath retrieve` CLI.
    `path` computed by walking `parent_label` (denormalised field deferred
    to S-B).
-2. **S-B — `path` field + backfill.** Add `OntologyEntry.path`,
-   maintain on insert/reparent, one-shot `backfill-paths` migration,
-   `subtree()`.
+2. **S-B — `path` field + backfill. DONE (S2.31).** Added
+   `OntologyEntry.path` (materialised ancestor chain, root-first),
+   maintained at all three parent-write points (insert in
+   `ontology._write_accepted`, re-parent in `actions._apply_parent` with
+   descendant cascade, rollback in `proposals._rollback_parent`) via a
+   new `paths.py` (`compute_path`/`set_path`/`propagate_paths`/
+   `resolved_path`). One-shot `backfill-paths` migration + `mahalath
+   subtree` CLI; `retrieval.subtree()` read view. `get_codified`/branch
+   filter now read the stored path, falling back to a live walk for
+   un-backfilled legacy entries.
 3. **S-C — `build_bundle` + `/api/retrieve` HTTP.** Token-budgeted
    bundles, JSON + compact NL; reference-closure expansion (ADR-023)
    with cycle guard; wire chat's context block through it.

@@ -15,9 +15,14 @@ This slice (S-A) ships the query core:
     for one frame) into a `CodifiedRef`: all frame meanings, provenance,
     tree path, references + reverse-references, document labels.
 
+S-B adds `subtree` (limited-depth descendant summary) and switches path
+resolution to the denormalised `OntologyEntry.path` (maintained in
+`paths.py`), falling back to a live walk for un-backfilled legacy
+entries.
+
 Retrieval never collapses polysemy (ADR-022): `get_codified` returns
 every frame; the caller disambiguates. Reference closure and budgeted
-bundles arrive in later slices (S-C); path/score denormalisation in S-B.
+bundles arrive in a later slice (S-C).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from mahalath.db.repositories import (
     DefinitionContextRepository,
     OntologyEntryRepository,
 )
+from mahalath.paths import resolved_path
 
 _MIN_TERM_LEN = 4
 _MPL_REF = re.compile(r"^(?P<label>MPL-\d{3}(?:\.\d{3})*[a-z]?)(?:#(?P<ctx>.+))?$")
@@ -175,7 +181,7 @@ def search_terms(
         total = base + int(round(text_bonus * 10))
         if total <= 0:
             continue
-        if not _passes(entry, filters, repo, ctx_by_id):
+        if not _passes(db, entry, filters, ctx_by_id):
             continue
         frames = sorted({
             ctx_by_id.get(d.context_id, d.context_id)
@@ -211,9 +217,9 @@ def _text_search(db: Database, query: str) -> dict[str, float]:
 
 
 def _passes(
+    db: Database,
     entry: OntologyEntry,
     filters: Filters | None,
-    repo: OntologyEntryRepository,
     ctx_by_id: dict[str, str],
 ) -> bool:
     if filters is None:
@@ -227,7 +233,7 @@ def _passes(
         if filters.context_name not in names:
             return False
     if filters.branch is not None:
-        path = _compute_path(repo, entry.mpl_label)
+        path = resolved_path(db, entry)
         if filters.branch not in path and filters.branch != entry.mpl_label:
             return False
     return True
@@ -291,7 +297,7 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
         mpl_label=entry.mpl_label,
         canonical_term=entry.canonical_term,
         aliases=list(entry.aliases),
-        path=_compute_path(repo, label),
+        path=resolved_path(db, entry),
         parent_label=entry.parent_label,
         meanings=meanings,
         references=list(entry.references_labels),
@@ -302,21 +308,76 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
     )
 
 
-def _compute_path(
-    repo: OntologyEntryRepository, label: str, *, max_depth: int = 50
-) -> list[str]:
-    """Ancestor MPL labels root-first, walking `parent_label` (cycle-safe).
+# --- Subtree summary ------------------------------------------------------
 
-    Computed on the fly in S-A; S-B denormalises this onto the entry.
+
+@dataclass
+class SubtreeNode:
+    mpl_label: str
+    canonical_term: str
+    depth: int                 # 1 = direct child of the root
+    parent_label: str | None
+    frames: list[str]
+    is_stale: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SubtreeSummary:
+    root: str
+    depth: int                 # the requested depth cap
+    nodes: list[SubtreeNode]   # descendants, breadth-first by depth
+    count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def subtree(db: Database, label: str, *, depth: int = 1) -> SubtreeSummary | None:
+    """Limited-depth descendant summary rooted at `label` (operator FR-5).
+
+    Walks the denormalised `parent_label` breadth-first to `depth`
+    levels (depth=1 → direct children). Cycle-safe via a visited set.
+    Returns None for an unknown root.
     """
-    path: list[str] = []
+    repo = OntologyEntryRepository(db)
+    if repo.get(label) is None:
+        return None
+    ctx_by_id = {c.context_id: c.name for c in DefinitionContextRepository(db).all()}
+
+    nodes: list[SubtreeNode] = []
     seen: set[str] = {label}
-    cur = repo.get(label)
-    depth = 0
-    while cur and cur.parent_label and cur.parent_label not in seen and depth < max_depth:
-        seen.add(cur.parent_label)
-        path.append(cur.parent_label)
-        cur = repo.get(cur.parent_label)
-        depth += 1
-    path.reverse()
-    return path
+    frontier = [label]
+    for level in range(1, depth + 1):
+        next_frontier: list[str] = []
+        for parent in frontier:
+            for child_label in sorted(repo.labels_under_parent(parent)):
+                if child_label in seen:
+                    continue
+                seen.add(child_label)
+                child = repo.get(child_label)
+                if child is None:
+                    continue
+                frames = sorted({
+                    name
+                    for d in child.definitions
+                    if d.context_id
+                    for name in [ctx_by_id.get(d.context_id, d.context_id)]
+                    if name
+                })
+                nodes.append(SubtreeNode(
+                    mpl_label=child.mpl_label,
+                    canonical_term=child.canonical_term,
+                    depth=level,
+                    parent_label=child.parent_label,
+                    frames=frames,
+                    is_stale=child.is_stale,
+                ))
+                next_frontier.append(child_label)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    return SubtreeSummary(root=label, depth=depth, nodes=nodes, count=len(nodes))

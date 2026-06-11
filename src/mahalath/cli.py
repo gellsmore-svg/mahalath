@@ -250,6 +250,25 @@ def main(argv: list[str] | None = None) -> int:
         help="One-shot migration: recompute references_labels for every "
         "ontology entry. Use on databases that pre-date S2.17.",
     )
+    subcommands.add_parser(
+        "backfill-paths",
+        help="One-shot migration: recompute the materialised ancestor "
+        "path for every ontology entry. Use on databases that pre-date "
+        "the S-B retrieval slice.",
+    )
+
+    subtree_parser = subcommands.add_parser(
+        "subtree",
+        help="Print a limited-depth descendant summary rooted at an MPL "
+        "label (operator FR-5).",
+    )
+    subtree_parser.add_argument(
+        "label", help="The root MPL label to summarise descendants of.",
+    )
+    subtree_parser.add_argument(
+        "--depth", type=int, default=1,
+        help="How many levels of descendants to include (default 1).",
+    )
 
     audit_stale_parser = subcommands.add_parser(
         "audit-stale",
@@ -466,6 +485,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "backfill-references":
         return _backfill_references(config)
+
+    if args.command == "backfill-paths":
+        return _backfill_paths(config)
+
+    if args.command == "subtree":
+        return _subtree(config, label=args.label, depth=args.depth)
 
     if args.command == "audit-stale":
         return _audit_stale(
@@ -1373,6 +1398,48 @@ def _backfill_references(config: AppConfig) -> int:
     try:
         result = backfill_references(db)
         print(json.dumps({"ok": True, **result}, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _backfill_paths(config: AppConfig) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.paths import backfill_paths
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        result = backfill_paths(db)
+        print(json.dumps({"ok": True, **result}, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _subtree(config: AppConfig, *, label: str, depth: int) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.retrieval import subtree
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        summary = subtree(db, label, depth=depth)
+        if summary is None:
+            print(
+                json.dumps({"ok": False, "error": f"unknown label {label!r}"}),
+                file=sys.stderr,
+            )
+            return 1
+        print(json.dumps({"ok": True, **summary.to_dict()}, indent=2))
         return 0
     finally:
         close_all()

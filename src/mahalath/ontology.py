@@ -128,10 +128,23 @@ def _write_accepted(
     mpl_label = _assign_label(entries, parent_label=parent_label)
 
     context_id = _resolve_context_id(db, result.final_context_name)
+    # Materialise the ancestor chain at insert: parent's own path plus
+    # the parent itself (empty for a top-level entry). See paths.py.
+    if parent_label is not None:
+        from mahalath.paths import resolved_path
+        parent_entry = entries.get(parent_label)
+        entry_path = (
+            [*resolved_path(db, parent_entry), parent_label]
+            if parent_entry is not None
+            else [parent_label]
+        )
+    else:
+        entry_path = []
     entry = OntologyEntry(
         mpl_label=mpl_label,
         canonical_term=result.term,
         parent_label=parent_label,
+        path=entry_path,
         confidence=result.final_confidence,
         definitions=[
             DefinitionVersion(
