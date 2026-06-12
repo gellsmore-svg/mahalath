@@ -6,7 +6,7 @@ The system is **local-first** (MongoDB + Ollama by default) with optional **fron
 
 ## The idea
 
-Natural language is ambiguous; AI-to-AI reasoning suffers for it. Mahalath ingests a corpus and continuously refines a precise internal language (**MPL**): every concept gets an opaque, immutable label (`MPL-004`), one or more debated definitions, a place in a hierarchy, and a full audit trail. Human words (`substrate`) are treated as approximate interfaces onto that machine-native concept space — a single term can hold several co-equal meanings, each keyed by the *frame* it speaks within (structural, theological, physical, …). A consuming LLM retrieves by human term, receives every codified meaning with provenance, and cites the `(MPL label, frame)` pair it kept.
+Natural language is ambiguous; AI-to-AI reasoning suffers for it. Mahalath ingests a corpus — any corpus: a legal code, an engineering handbook, a research field's literature, a novel — and continuously refines a precise internal language (**MPL**): every concept gets an opaque, immutable label (`MPL-004`), one or more debated definitions, a place in a hierarchy, and a full audit trail. Human words are treated as approximate interfaces onto that machine-native concept space — a single term can hold several co-equal meanings, each keyed by the *frame* it speaks within (a `field` is one thing to a physicist, another to a farmer, another to a database designer). A consuming LLM retrieves by human term, receives every codified meaning with provenance, and cites the `(MPL label, frame)` pair it kept.
 
 ## What it does
 
@@ -27,7 +27,7 @@ Every model interaction is recorded with a `decision_log_id` and queryable forev
 
 ### Polysemy as a first-class citizen
 
-Definitions are tagged with a **context frame** (a governed taxonomy of `DefinitionContext` rows). One entry can legitimately carry a structural definition *and* a theological one — they are co-equal; nothing supersedes anything. The web UI, chat, glossary export, and retrieval layer all group and label definitions by frame.
+Definitions are tagged with a **context frame** (a governed taxonomy of `DefinitionContext` rows, authored per corpus). One entry can legitimately carry, say, a legal definition *and* an engineering one — they are co-equal; nothing supersedes anything. The web UI, chat, glossary export, and retrieval layer all group and label definitions by frame.
 
 ### Self-healing
 
@@ -38,7 +38,7 @@ Each entry records which other MPL labels its definitions mention (explicit + se
 A typed read view over the ontology (`retrieval.py`), available as a library, CLI, and HTTP API:
 
 - `search_terms` — resolve human terms to ranked matches (shared scorer + `$text` fuzzy index, branch/frame/status/confidence filters).
-- `get_codified` — expand `MPL-004` (or the frame-scoped handle `MPL-004#structural`) into all meanings, tree path, references both directions, provenance, stale state.
+- `get_codified` — expand `MPL-004` (or the frame-scoped handle `MPL-004#physics`) into all meanings, tree path, references both directions, provenance, stale state.
 - `build_bundle` — a **token-budgeted, prompt-ready bundle**: primary entries with *all* their frames (retrieval never collapses polysemy — the caller disambiguates), a mandatory **reference closure** (every codified term cited inside a returned description is included transitively, cycle-safe), ranked alternatives, and a compact NL rendering. Budget pressure trims breadth and verbosity in recorded steps; it never drops a frame or a closure node.
 - `subtree` — limited-depth descendant summaries via the materialised ancestor path (one indexed query).
 - `propose_term` — the one write path: a term the ontology doesn't confidently cover is enqueued onto the existing undecided path, where the normal REM re-debate machinery picks it up.
@@ -78,9 +78,9 @@ cp my-source.md input/
 .venv/bin/mahalath export-glossary --format md --out ontology/glossary.md
 
 # Query it like an LLM would
-.venv/bin/mahalath retrieve "substrate" --format text --budget 800
+.venv/bin/mahalath retrieve "field" --format text --budget 800
 .venv/bin/mahalath subtree MPL-001 --depth 2
-.venv/bin/mahalath propose-term "morphogenesis" --context "…source snippet…" --near MPL-004
+.venv/bin/mahalath propose-term "lattice" --context "…source snippet…" --near MPL-004
 ```
 
 For continuous operation, run the scheduler:
