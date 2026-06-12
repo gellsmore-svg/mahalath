@@ -404,6 +404,11 @@ def main(argv: list[str] | None = None) -> int:
         "--min-confidence", type=float, default=6.0,
         help="Don't write definitions below this confidence (default 6.0).",
     )
+    redefine_parser.add_argument(
+        "--no-intent-backfill", action="store_true",
+        help="Skip the scoped intent attribution that normally runs "
+        "over the entries this pass redefined.",
+    )
 
     frontier_parser = subcommands.add_parser(
         "frontier-review",
@@ -652,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
             adapter_name=args.adapter,
             model_override=args.model,
             min_confidence=args.min_confidence,
+            skip_intent_backfill=args.no_intent_backfill,
         )
 
     if args.command == "frontier-review":
@@ -1818,6 +1824,7 @@ def _redefine_stale(
     adapter_name: str | None,
     model_override: str | None,
     min_confidence: float,
+    skip_intent_backfill: bool = False,
 ) -> int:
     import logging
     from mahalath.adapters import make_adapter
@@ -1845,6 +1852,7 @@ def _redefine_stale(
         result = redefine_pending_stale(
             config, db, adapter,
             max_items=max_items, min_confidence=min_confidence,
+            intent_backfill=not skip_intent_backfill,
         )
         if result.items_redefined > 0:
             from mahalath.glossary import refresh_glossary
@@ -1862,6 +1870,7 @@ def _redefine_stale(
         "items_errored": result.items_errored,
         "verdicts": result.verdicts,
         "errors": result.errors,
+        "intent_backfill": result.intent_backfill,
     }
     print(json.dumps(payload, indent=2))
     return 0

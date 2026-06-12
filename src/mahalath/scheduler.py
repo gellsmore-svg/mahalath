@@ -175,6 +175,16 @@ def _default_rem_job(config: AppConfig) -> None:
         redef.items_at_start, redef.items_redefined,
         redef.items_skipped, redef.items_errored,
     )
+    if redef.intent_backfill:
+        log.info(
+            "scheduler: REM redefine intent backfill — attempted=%d "
+            "stored=%d below_threshold=%d non_unanimous=%d errored=%d",
+            redef.intent_backfill["attempted"],
+            redef.intent_backfill["stored"],
+            redef.intent_backfill["below_threshold"],
+            redef.intent_backfill["no_unanimous"],
+            redef.intent_backfill["errored"],
+        )
 
     if (
         result.items_accepted > 0

@@ -693,3 +693,120 @@ def test_backfill_contexts_only_labels_scopes_the_scan(mongo_config, mongo_db) -
     assert [p.mpl_label for p in result.proposals] == ["MPL-001"]
     # MPL-002 was never touched.
     assert OntologyEntryRepository(mongo_db).get("MPL-002").definitions[0].context_id is None
+
+
+# --- Redefine-tail intent backfill ------------------------------------------
+
+
+def _seed_stale_inconsistent(mongo_db, label="MPL-002", term="beta") -> None:
+    _seed(mongo_db, label, term, definitions=["depends on alpha"])
+    mongo_db.ontology_entries.update_one(
+        {"_id": label},
+        {"$set": {"is_stale": True},
+         "$push": {"stale_reasons": {
+             "upstream_label": None,
+             "change_type": "audit_inconsistent",
+             "changed_at": None,
+             "note": "fake audit verdict",
+         }}},
+    )
+
+
+def _redefine_adapter_with_intents():
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.intents import INTENT_ATTRIBUTION_TAG
+
+    return MockAdapter(
+        default_response="{}",
+        responses={
+            "ontology definition editor": json.dumps({
+                "new_definition": "Beta builds on alpha's current form.",
+                "confidence": 8.0,
+                "rationale": "tracks upstream",
+            }),
+            INTENT_ATTRIBUTION_TAG: json.dumps({
+                "intent_tags": ["teach"],
+                "intentionality": "high",
+                "confidence": 9.0,
+            }),
+        },
+    )
+
+
+def test_redefine_runs_scoped_intent_backfill(mongo_db) -> None:
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.db.models import DefinitionContext
+    from mahalath.db.repositories import DefinitionContextRepository
+    from mahalath.staleness import redefine_pending_stale
+
+    ctx_repo = DefinitionContextRepository(mongo_db)
+    teach = ctx_repo.insert(DefinitionContext(
+        name="teach", description="instructs", kind="intent",
+    ))
+    _seed_stale_inconsistent(mongo_db)
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+
+    result = redefine_pending_stale(
+        config, mongo_db, _redefine_adapter_with_intents(), max_items=5,
+    )
+
+    assert result.items_redefined == 1
+    assert result.intent_backfill is not None
+    # Both the original (unattributed) and the appended definition are
+    # in scope — backfill sweeps every unannotated def on the entry.
+    assert result.intent_backfill["attempted"] == 2
+    assert result.intent_backfill["stored"] == 2
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    new_def = stored.definitions[-1]
+    assert new_def.intent_tags == [teach.context_id]
+    assert new_def.intentionality == "high"
+    assert new_def.intent_confidence == 9.0
+
+
+def test_redefine_intent_backfill_opt_out(mongo_db) -> None:
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.intents import INTENT_ATTRIBUTION_TAG
+    from mahalath.db.models import DefinitionContext
+    from mahalath.db.repositories import DefinitionContextRepository
+    from mahalath.staleness import redefine_pending_stale
+
+    DefinitionContextRepository(mongo_db).insert(DefinitionContext(
+        name="teach", description="instructs", kind="intent",
+    ))
+    _seed_stale_inconsistent(mongo_db)
+    adapter = _redefine_adapter_with_intents()
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+
+    result = redefine_pending_stale(
+        config, mongo_db, adapter, max_items=5, intent_backfill=False,
+    )
+
+    assert result.items_redefined == 1
+    assert result.intent_backfill is None
+    assert not any(
+        INTENT_ATTRIBUTION_TAG in c["prompt"] for c in adapter.calls
+    )
+    stored = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert stored.definitions[-1].intent_tags == []
+
+
+def test_redefine_intent_backfill_noop_without_taxonomy(mongo_db) -> None:
+    from mahalath.config import AppConfig, MongoConfig
+    from mahalath.intents import INTENT_ATTRIBUTION_TAG
+    from mahalath.staleness import redefine_pending_stale
+
+    _seed_stale_inconsistent(mongo_db)
+    adapter = _redefine_adapter_with_intents()
+    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+
+    result = redefine_pending_stale(config, mongo_db, adapter, max_items=5)
+
+    assert result.items_redefined == 1
+    # Backfill ran but found no intent taxonomy: zero attempts, no
+    # adapter calls for attribution.
+    assert result.intent_backfill is not None
+    assert result.intent_backfill["attempted"] == 0
+    assert not any(
+        INTENT_ATTRIBUTION_TAG in c["prompt"] for c in adapter.calls
+    )

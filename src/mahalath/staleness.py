@@ -858,6 +858,10 @@ class RedefineResult:
     items_errored: int = 0
     verdicts: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Summary of the scoped post-redefine intent backfill (None when
+    # disabled or nothing was redefined). Same shape as the pipeline
+    # tail's intent_backfill payload.
+    intent_backfill: dict[str, Any] | None = None
 
 
 def stale_entries_with_inconsistent_audit(
@@ -1138,8 +1142,16 @@ def redefine_pending_stale(
     *,
     max_items: int = 10,
     min_confidence: float = 6.0,
+    intent_backfill: bool = True,
 ) -> RedefineResult:
-    """Walk audit-flagged stale entries and rewrite definitions in place."""
+    """Walk audit-flagged stale entries and rewrite definitions in place.
+
+    Redefined entries then get a scoped intent backfill (the pipeline-
+    tail pattern, S2.27/I-B): redefine appends definitions without
+    intent annotation, so without this the self-healing pass reopens
+    the intent-coverage gap every time it runs. `intent_backfill=False`
+    opts out. No-ops when no intent taxonomy is defined.
+    """
     stale = stale_entries_with_inconsistent_audit(db, limit=max_items)
     style_overlay = load_style_overlay(config)
 
@@ -1185,6 +1197,43 @@ def redefine_pending_stale(
         log.info(
             "redefine: %s rewritten and cleared (conf %.1f)",
             entry.mpl_label, verdict.confidence,
+        )
+
+    redefined_labels = {v["mpl_label"] for v in result.verdicts}
+    if intent_backfill and redefined_labels:
+        from mahalath.intents import backfill_intents
+        ib = backfill_intents(
+            db, adapter,
+            max_items=len(redefined_labels) * 8,
+            passes=config.runtime.intent_consensus_passes,
+            min_confidence=config.runtime.confidence_threshold,
+            apply=True,
+            only_labels=redefined_labels,
+            style_overlay=style_overlay,
+        )
+        result.intent_backfill = {
+            "attempted": ib.attempted,
+            "stored": ib.stored,
+            "below_threshold": ib.below_threshold,
+            "no_unanimous": ib.no_unanimous,
+            "errored": ib.errored,
+            "attributions": [
+                {
+                    "mpl_label": a.mpl_label,
+                    "definition_index": a.definition_index,
+                    "tags": a.unanimous_tags,
+                    "intentionality": a.intentionality,
+                    "intent_confidence": a.intent_confidence,
+                    "outcome": a.outcome,
+                }
+                for a in ib.attributions
+            ],
+        }
+        log.info(
+            "redefine: intent backfill — attempted=%d stored=%d "
+            "below_threshold=%d non_unanimous=%d errored=%d",
+            ib.attempted, ib.stored, ib.below_threshold,
+            ib.no_unanimous, ib.errored,
         )
 
     return result
