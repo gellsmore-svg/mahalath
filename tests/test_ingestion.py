@@ -146,3 +146,18 @@ def test_ingest_one_disambiguates_archive_name_collision(
     # The archived copy carries the checksum suffix.
     assert archive.name != "notes.md"
     assert archive.name.startswith("notes__")
+
+
+def test_ingest_one_stores_language(
+    tmp_path: Path, mongo_db, mongo_config: AppConfig
+) -> None:
+    config = _config_for(tmp_path, mongo_config.mongo.database)
+    src = tmp_path / "input" / "beispiel.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# Beispiel\n\nEin Gewebe ist ein Geflecht.\n", encoding="utf-8")
+
+    result = ingest_one(src, config, mongo_db, project_root=tmp_path,
+                        language="de")
+    assert result.document.language == "de"
+    stored = mongo_db.documents.find_one({"document_id": result.document.document_id})
+    assert stored["language"] == "de"

@@ -51,6 +51,9 @@ class DocumentRecord(_MahalathModel):
     archive_path: str
     checksum_sha256: str
     title: str | None = None
+    # Which language lexicon this document feeds (ADR-028). Entries
+    # persisted from this document inherit it.
+    language: str = "en"
     byte_size: int
     char_count: int
     ingested_at: datetime = Field(default_factory=_utcnow)
@@ -164,6 +167,13 @@ class OntologyEntry(_MahalathModel):
     mpl_label: str
     canonical_term: str
     aliases: list[str] = Field(default_factory=list)
+    # Which language lexicon this entry belongs to (ADR-028). Labels
+    # are one global opaque sequence, but every entry's meaning lives
+    # within exactly one language; trees never cross languages. NOT
+    # Mongo's text-index override field — that is `text_language`
+    # (see db/indexes.py), deliberately separate so unsupported codes
+    # here can never fail inserts.
+    language: str = "en"
     parent_label: str | None = None
     path: list[str] = Field(default_factory=list)
     definitions: list[DefinitionVersion] = Field(default_factory=list)

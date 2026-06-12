@@ -395,3 +395,44 @@ def test_apply_destructive_action_raises_not_implemented(mongo_db) -> None:
     )
     with pytest.raises(NotImplementedError):
         apply(action, mongo_db)
+
+
+# --- language boundaries (M-A, ADR-028) ---------------------------------------
+
+
+def test_validate_parent_rejects_cross_language(mongo_db) -> None:
+    from mahalath.actions import ProposeParent, validate
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import OntologyEntryRepository
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(mpl_label="MPL-301", canonical_term="weave",
+                              confidence=8.0, language="en"))
+    repo.insert(OntologyEntry(mpl_label="MPL-302", canonical_term="Gewebe",
+                              confidence=8.0, language="de"))
+    result = validate(
+        ProposeParent(child_label="MPL-302", parent_label="MPL-301",
+                      reason="t", confidence=9.0),
+        mongo_db,
+    )
+    assert result.valid is False
+    assert "cross-language" in result.reason
+
+
+def test_validate_merge_rejects_cross_language(mongo_db) -> None:
+    from mahalath.actions import ProposeMerge, validate
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import OntologyEntryRepository
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(mpl_label="MPL-303", canonical_term="weave",
+                              confidence=8.0, language="en"))
+    repo.insert(OntologyEntry(mpl_label="MPL-304", canonical_term="Gewebe",
+                              confidence=8.0, language="de"))
+    result = validate(
+        ProposeMerge(keep_label="MPL-303", drop_label="MPL-304",
+                     reason="t", confidence=9.0),
+        mongo_db,
+    )
+    assert result.valid is False
+    assert "cross-language merge" in result.reason

@@ -182,3 +182,30 @@ def test_persist_undecided_with_below_threshold_when_not_at_cap(mongo_db) -> Non
     persisted = persist_debate_result(result, mongo_db, runtime)
     assert persisted.undecided_item is not None
     assert persisted.undecided_item.reason == "below_threshold"
+
+
+# --- lexicon membership (M-A, ADR-028) ----------------------------------------
+
+
+def test_entry_inherits_document_language(mongo_db) -> None:
+    from mahalath.db.models import DocumentRecord
+    from mahalath.db.repositories import DocumentRepository
+
+    DocumentRepository(mongo_db).insert(DocumentRecord(
+        document_id="doc-de-1", source_path="x.md", archive_path="x.md",
+        checksum_sha256="c" * 64, byte_size=1, char_count=1, language="de",
+    ))
+    result = _accepted_result("Gewebe")
+    result.source_document_id = "doc-de-1"
+    persisted = persist_debate_result(result, mongo_db, RuntimeConfig())
+    entry = OntologyEntryRepository(mongo_db).get(persisted.mpl_label)
+    assert entry.language == "de"
+
+
+def test_entry_defaults_to_english_without_document(mongo_db) -> None:
+    # Legacy/synthetic source ids (no document record) read as "en".
+    persisted = persist_debate_result(
+        _accepted_result("weave"), mongo_db, RuntimeConfig()
+    )
+    entry = OntologyEntryRepository(mongo_db).get(persisted.mpl_label)
+    assert entry.language == "en"

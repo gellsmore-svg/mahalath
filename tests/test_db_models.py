@@ -114,3 +114,56 @@ def test_undecided_item_requires_reason() -> None:
     )
     assert item.escalation_level == 0
     assert item.last_confidence is None
+
+
+# --- text-index override migration (M-A) --------------------------------------
+
+
+def test_text_index_uses_decoupled_override(mongo_db) -> None:
+    info = mongo_db.ontology_entries.index_information()
+    assert info["ontology_text"]["language_override"] == "text_language"
+
+
+def test_legacy_text_index_is_migrated(mongo_db) -> None:
+    from pymongo import TEXT
+    from mahalath.db import ensure_indexes
+
+    # Recreate the pre-M-A index shape (default override = "language").
+    mongo_db.ontology_entries.drop_index("ontology_text")
+    mongo_db.ontology_entries.create_index(
+        [("canonical_term", TEXT), ("aliases", TEXT), ("definitions.text", TEXT)],
+        weights={"canonical_term": 10, "aliases": 5, "definitions.text": 1},
+        name="ontology_text",
+    )
+    ensure_indexes(mongo_db)
+    info = mongo_db.ontology_entries.index_information()
+    assert info["ontology_text"]["language_override"] == "text_language"
+
+    # An entry whose semantic language Mongo can't stem must insert fine.
+    mongo_db.ontology_entries.insert_one({
+        "_id": "MPL-901", "mpl_label": "MPL-901", "canonical_term": "样本",
+        "language": "zh", "confidence": 8.0, "definitions": [],
+    })
+    assert mongo_db.ontology_entries.find_one({"_id": "MPL-901"}) is not None
+
+
+def test_backfill_language_stamps_legacy_records(mongo_db) -> None:
+    from mahalath.ontology import backfill_language
+
+    # Raw legacy docs without the language field.
+    mongo_db.ontology_entries.insert_one({
+        "_id": "MPL-902", "mpl_label": "MPL-902", "canonical_term": "old",
+        "confidence": 8.0, "definitions": [],
+    })
+    mongo_db.documents.insert_one({
+        "document_id": "doc-legacy", "source_path": "x", "archive_path": "x",
+        "checksum_sha256": "d" * 64, "byte_size": 1, "char_count": 1,
+    })
+    result = backfill_language(mongo_db)
+    assert result == {"entries_stamped": 1, "documents_stamped": 1}
+    assert mongo_db.ontology_entries.find_one({"_id": "MPL-902"})["language"] == "en"
+    assert mongo_db.documents.find_one({"document_id": "doc-legacy"})["language"] == "en"
+    # Idempotent.
+    assert backfill_language(mongo_db) == {
+        "entries_stamped": 0, "documents_stamped": 0,
+    }

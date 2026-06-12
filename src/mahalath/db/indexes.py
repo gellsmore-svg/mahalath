@@ -11,6 +11,20 @@ from pymongo import ASCENDING, DESCENDING, TEXT
 from pymongo.database import Database
 
 
+def _migrate_text_index_override(db: Database) -> None:
+    """Drop a pre-M-A `ontology_text` index that still uses Mongo's
+    default language_override ("language"); the create_index call that
+    follows rebuilds it with the decoupled `text_language` override.
+    Idempotent: a no-op once the index carries the right override."""
+    try:
+        info = db.ontology_entries.index_information()
+    except Exception:
+        return  # collection doesn't exist yet; create_index will make it
+    existing = info.get("ontology_text")
+    if existing is not None and existing.get("language_override") != "text_language":
+        db.ontology_entries.drop_index("ontology_text")
+
+
 def ensure_indexes(db: Database) -> dict[str, list[str]]:
     created: dict[str, list[str]] = {}
 
@@ -21,10 +35,25 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.documents.create_index([("ingested_at", DESCENDING)]),
     ]
 
+    # The text index must NOT use Mongo's default language_override (a
+    # document field literally named "language"): ADR-028 gives entries
+    # a semantic `language` field, and Mongo would read it as the
+    # stemming language — failing every insert the moment a code Mongo
+    # can't stem (zh, ja, ko, ar, …) appears. `text_language` is the
+    # decoupled override: unset → default english stemming (today's
+    # behaviour); set per-entry when onboarding a language Mongo stems
+    # ("german"), or to "none" for unsupported ones.
+    _migrate_text_index_override(db)
+
     created["ontology_entries"] = [
         # `_id` doubles as the MPL label so no extra uniqueness index needed.
         db.ontology_entries.create_index("parent_label"),
         db.ontology_entries.create_index("canonical_term"),
+        # Per-lexicon term lookup (ADR-030): one collection, language
+        # as the partition key.
+        db.ontology_entries.create_index(
+            [("language", ASCENDING), ("canonical_term", ASCENDING)]
+        ),
         db.ontology_entries.create_index("status"),
         db.ontology_entries.create_index("references_labels"),  # for reverse lookups
         # Multikey index on the materialised ancestor chain (S-B):
@@ -39,6 +68,7 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
             [("canonical_term", TEXT), ("aliases", TEXT), ("definitions.text", TEXT)],
             weights={"canonical_term": 10, "aliases": 5, "definitions.text": 1},
             name="ontology_text",
+            language_override="text_language",
         ),
     ]
 

@@ -790,6 +790,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
         raw_filters = payload.get("filters") or {}
         min_conf = raw_filters.get("min_confidence")
         filters = Filters(
+            language=str(raw_filters.get("language") or "en"),
             branch=raw_filters.get("branch"),
             context_name=raw_filters.get("context"),
             status=raw_filters.get("status"),
@@ -834,6 +835,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
             context=payload.get("context"),
             near=payload.get("near"),
             enqueue=not bool(payload.get("dry_run", False)),
+            language=str(payload.get("language") or "en"),
         )
         return JSONResponse({"ok": True, **template.to_dict()})
 

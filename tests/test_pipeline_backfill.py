@@ -309,3 +309,36 @@ def test_pipeline_known_alias_matches_too(
     known = [d for d in result["debated"] if d["outcome"] == "already_known"]
     assert known and known[0]["mpl_label"] == "MPL-009"
     assert mongo_db.ontology_entries.count_documents({}) == 1
+
+
+def test_known_term_guard_is_language_scoped(
+    tmp_path: Path, mongo_config, mongo_db
+) -> None:
+    """A German entry spelled like an English candidate must not absorb
+    the English document's evidence — lexicons are peers (ADR-028)."""
+    from mahalath.db.models import OntologyEntry
+
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="Agonist", confidence=8.0,
+        language="de", definitions=[],
+    ))
+    doc = _seed_document(tmp_path, mongo_db)  # language defaults to en
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, _adapter(), cfg,
+        max_terms=5,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+    )
+
+    # Not recognised: the en lexicon has no 'agonist', so it was debated
+    # into a NEW en entry; the de entry is untouched.
+    assert not [d for d in result["debated"] if d["outcome"] == "already_known"]
+    accepted = [d for d in result["debated"] if d["outcome"] == "accepted"]
+    assert len(accepted) == 1
+    de_entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert doc.document_id not in de_entry.source_document_ids
+    new_entry = OntologyEntryRepository(mongo_db).get(accepted[0]["mpl_label"])
+    assert new_entry.language == "en"

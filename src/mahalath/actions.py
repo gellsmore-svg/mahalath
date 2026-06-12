@@ -278,6 +278,15 @@ def _validate_parent(action: ProposeParent, db: Database) -> ValidationResult:
             False, f"parent label {action.parent_label!r} does not exist"
         )
 
+    # Trees never cross languages (ADR-028): a lexicon's hierarchy is
+    # built from its own evidence only.
+    if child.language != parent.language:
+        return ValidationResult(
+            False,
+            f"cross-language parent: child is {child.language!r}, "
+            f"parent is {parent.language!r}",
+        )
+
     # Re-parenting is allowed (S2.4); only reject a no-op (same parent).
     if child.parent_label == action.parent_label:
         return ValidationResult(
@@ -363,13 +372,23 @@ def _validate_merge(action: ProposeMerge, db: Database) -> ValidationResult:
     if action.keep_label == action.drop_label:
         return ValidationResult(False, "keep and drop are the same label")
     entries = OntologyEntryRepository(db)
-    if entries.get(action.keep_label) is None:
+    keep = entries.get(action.keep_label)
+    if keep is None:
         return ValidationResult(
             False, f"keep label {action.keep_label!r} does not exist"
         )
-    if entries.get(action.drop_label) is None:
+    drop = entries.get(action.drop_label)
+    if drop is None:
         return ValidationResult(
             False, f"drop label {action.drop_label!r} does not exist"
+        )
+    # Merging across languages would be a translation assertion in
+    # disguise; equivalence lives in mappings, never in merges (ADR-028).
+    if keep.language != drop.language:
+        return ValidationResult(
+            False,
+            f"cross-language merge: keep is {keep.language!r}, "
+            f"drop is {drop.language!r}",
         )
     return ValidationResult(True, None)
 

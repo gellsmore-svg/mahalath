@@ -182,3 +182,47 @@ def test_get_codified_unknown_label_returns_none(mongo_db) -> None:
 def test_get_codified_unknown_frame_returns_none(mongo_db) -> None:
     _seed(mongo_db)
     assert get_codified(mongo_db, "MPL-002#nonexistent") is None
+
+
+# --- language scoping (M-A, ADR-028/030) --------------------------------------
+
+
+def _seed_bilingual(mongo_db) -> None:
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-201", canonical_term="stewardship", confidence=9.0,
+        language="en",
+        definitions=[DefinitionVersion(text="Delegated care of a holding.")],
+    ))
+    repo.insert(OntologyEntry(
+        mpl_label="MPL-202", canonical_term="Verantwortung", confidence=9.0,
+        language="de",
+        definitions=[DefinitionVersion(text="Pflicht zur Rechenschaft.")],
+    ))
+
+
+def test_search_defaults_to_english_lexicon(mongo_db) -> None:
+    _seed_bilingual(mongo_db)
+    labels = [m.mpl_label for m in search_terms(mongo_db, ["stewardship"])]
+    assert "MPL-201" in labels
+    assert all(m != "MPL-202" for m in labels)
+    # The German term is invisible without selecting its lexicon.
+    assert search_terms(mongo_db, ["Verantwortung"]) == []
+
+
+def test_search_scopes_to_requested_lexicon(mongo_db) -> None:
+    _seed_bilingual(mongo_db)
+    matches = search_terms(
+        mongo_db, ["Verantwortung"], filters=Filters(language="de"),
+    )
+    assert [m.mpl_label for m in matches] == ["MPL-202"]
+    # And the English entry is invisible from inside the de lexicon.
+    assert search_terms(
+        mongo_db, ["stewardship"], filters=Filters(language="de"),
+    ) == []
+
+
+def test_get_codified_is_language_agnostic(mongo_db) -> None:
+    # Labels are globally unique; label-addressed reads need no language.
+    _seed_bilingual(mongo_db)
+    assert get_codified(mongo_db, "MPL-202") is not None

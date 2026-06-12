@@ -175,6 +175,10 @@ class CodifiedRef:
 
 @dataclass
 class Filters:
+    # Which language lexicon to search (ADR-030: explicit parameter,
+    # "en" default). Label-addressed reads (get_codified, subtree) are
+    # unaffected — labels are globally unique.
+    language: str = "en"
     branch: str | None = None          # ancestor MPL label must be on the path
     context_name: str | None = None    # entry must carry a definition in this frame
     status: str | None = None
@@ -216,10 +220,15 @@ def search_terms(
         if intent_tag_id is None:
             return []
 
-    text_hits = _text_search(db, " ".join(terms))
+    language = filters.language if filters is not None else "en"
+    text_hits = _text_search(db, " ".join(terms), language=language)
 
     scored: list[Match] = []
-    for label in repo.all_labels():
+    lexicon_labels = [
+        doc["_id"]
+        for doc in db.ontology_entries.find({"language": language}, {"_id": 1})
+    ]
+    for label in lexicon_labels:
         entry = repo.get(label)
         if entry is None:
             continue
@@ -247,7 +256,9 @@ def search_terms(
     return scored[:limit]
 
 
-def _text_search(db: Database, query: str) -> dict[str, float]:
+def _text_search(
+    db: Database, query: str, *, language: str = "en"
+) -> dict[str, float]:
     """Run the Mongo `$text` query; return {mpl_label: textScore}.
 
     Returns an empty map (not an error) when the text index is absent so
@@ -255,7 +266,7 @@ def _text_search(db: Database, query: str) -> dict[str, float]:
     """
     try:
         cursor = db.ontology_entries.find(
-            {"$text": {"$search": query}},
+            {"$text": {"$search": query}, "language": language},
             {"score": {"$meta": "textScore"}},
         ).limit(100)
         return {doc["_id"]: doc.get("score", 0.0) for doc in cursor}
@@ -953,6 +964,7 @@ def propose_term(
     near: str | None = None,
     enqueue: bool = True,
     min_score: int = 20,
+    language: str = "en",
 ) -> ProposalTemplate:
     """Propose a term the ontology doesn't confidently cover yet.
 
@@ -978,7 +990,9 @@ def propose_term(
     if not term:
         raise ValueError("propose_term requires a non-empty term")
 
-    matches = search_terms(db, [term], limit=5)
+    matches = search_terms(
+        db, [term], filters=Filters(language=language), limit=5
+    )
     confident = [m for m in matches if m.score >= min_score]
     if confident:
         return ProposalTemplate(

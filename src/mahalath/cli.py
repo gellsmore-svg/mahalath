@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
             "the runtime-level style_overlay_path."
         ),
     )
+    ingest_one.add_argument(
+        "--language", default="en",
+        help="Language lexicon this document feeds (ADR-028; default en).",
+    )
 
     debate_one = subcommands.add_parser(
         "debate-one", help="(Stage 1) Run one debate cycle on a single candidate term."
@@ -178,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Restrict to entries at or above this confidence.",
     )
     retrieve_parser.add_argument(
+        "--language", default="en",
+        help="Language lexicon to search (ADR-030; default en).",
+    )
+    retrieve_parser.add_argument(
         "--matches-only", action="store_true",
         help="Print ranked matches without building the bundle.",
     )
@@ -214,6 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Report what would happen without enqueueing.",
     )
 
+    propose_term_parser.add_argument(
+        "--language", default="en",
+        help="Language lexicon to check/enqueue against (default en).",
+    )
     subcommands.add_parser(
         "list-ontology", help="List ontology entries."
     )
@@ -352,6 +364,12 @@ def main(argv: list[str] | None = None) -> int:
         help="One-shot migration: recompute references_labels for every "
         "ontology entry. Use on databases that pre-date S2.17.",
     )
+    subcommands.add_parser(
+        "backfill-language",
+        help="One-shot migration: stamp language='en' on entries and "
+        "documents that pre-date the M-A multilingual slice (ADR-028).",
+    )
+
     subcommands.add_parser(
         "backfill-paths",
         help="One-shot migration: recompute the materialised ancestor "
@@ -516,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ingest-one":
         return _ingest_one(
-            config, Path(args.path), style_overlay_path=args.style_overlay
+            config, Path(args.path), style_overlay_path=args.style_overlay,
+            language=args.language,
         )
 
     if args.command == "process-document":
@@ -537,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
             context=args.context,
             near=args.near,
             dry_run=args.dry_run,
+            language=args.language,
         )
 
     if args.command == "list-ontology":
@@ -546,6 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return _retrieve(
             config,
             terms=args.terms,
+            language=args.language,
             limit=args.limit,
             branch=args.branch,
             context=args.context,
@@ -646,6 +667,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-references":
         return _backfill_references(config)
 
+    if args.command == "backfill-language":
+        return _backfill_language(config)
+
     if args.command == "backfill-paths":
         return _backfill_paths(config)
 
@@ -726,6 +750,7 @@ def _ingest_one(
     source_path: Path,
     *,
     style_overlay_path: str | None = None,
+    language: str = "en",
 ) -> int:
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.ingestion import IngestionError, ingest_one
@@ -739,7 +764,8 @@ def _ingest_one(
 
     try:
         result = ingest_one(
-            source_path, config, db, style_overlay_path=style_overlay_path
+            source_path, config, db, style_overlay_path=style_overlay_path,
+            language=language,
         )
     except IngestionError as exc:
         print(f"mahalath: ingestion failed: {exc}", file=sys.stderr)
@@ -994,9 +1020,10 @@ def _run_pipeline_on_document(
     # existing entry's source_document_ids and skip the debate (no
     # model spend, no duplicate MPL label). Known matches don't consume
     # max_terms slots.
+    doc_language = getattr(document, "language", None) or "en"
     known_by_term: dict[str, str] = {}
     for doc_ in db.ontology_entries.find(
-        {}, {"canonical_term": 1, "aliases": 1}
+        {"language": doc_language}, {"canonical_term": 1, "aliases": 1}
     ):
         known_by_term[doc_["canonical_term"].casefold()] = doc_["_id"]
         for alias in doc_.get("aliases") or []:
@@ -1771,6 +1798,24 @@ def _backfill_references(config: AppConfig) -> int:
         close_all()
 
 
+def _backfill_language(config: AppConfig) -> int:
+    """Stamp the default lexicon on pre-M-A records. Idempotent."""
+    from mahalath.db import close_all, get_database
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        from mahalath.ontology import backfill_language
+        print(json.dumps({"ok": True, **backfill_language(db)}, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
 def _backfill_paths(config: AppConfig) -> int:
     from mahalath.db import close_all, get_database
     from mahalath.paths import backfill_paths
@@ -2017,6 +2062,7 @@ def _retrieve(
     config: AppConfig,
     *,
     terms: list[str],
+    language: str,
     limit: int,
     branch: str | None,
     context: str | None,
@@ -2039,6 +2085,7 @@ def _retrieve(
 
     try:
         filters = Filters(
+        language=language,
             branch=branch,
             context_name=context,
             status=status,
@@ -2078,6 +2125,7 @@ def _propose_term(
     context: str | None,
     near: str | None,
     dry_run: bool,
+    language: str = "en",
 ) -> int:
     from mahalath.db import close_all, ensure_indexes, get_database
     from mahalath.retrieval import propose_term
@@ -2092,6 +2140,7 @@ def _propose_term(
     try:
         template = propose_term(
             db, term, context=context, near=near, enqueue=not dry_run,
+            language=language,
         )
         print(json.dumps({"ok": True, **template.to_dict()}, indent=2))
         return 0

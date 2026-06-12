@@ -127,6 +127,13 @@ def _write_accepted(
     tree = OntologyTreeRepository(db)
     mpl_label = _assign_label(entries, parent_label=parent_label)
 
+    # Lexicon membership (ADR-028): the entry belongs to the language
+    # of the document that evidenced it. Missing/legacy docs read "en".
+    src_doc = db.documents.find_one(
+        {"document_id": result.source_document_id}, {"language": 1}
+    )
+    entry_language = (src_doc or {}).get("language") or "en"
+
     context_id = _resolve_context_id(db, result.final_context_name)
     # Materialise the ancestor chain at insert: parent's own path plus
     # the parent itself (empty for a top-level entry). See paths.py.
@@ -143,6 +150,7 @@ def _write_accepted(
     entry = OntologyEntry(
         mpl_label=mpl_label,
         canonical_term=result.term,
+        language=entry_language,
         parent_label=parent_label,
         path=entry_path,
         confidence=result.final_confidence,
@@ -274,3 +282,18 @@ def _resolve_context_id(db: Database, context_name: str | None) -> str | None:
     from mahalath.db.repositories import DefinitionContextRepository
     ctx = DefinitionContextRepository(db).get_by_name(context_name, kind="frame")
     return ctx.context_id if ctx is not None else None
+
+
+def backfill_language(db: Database) -> dict[str, int]:
+    """One-shot M-A migration: stamp language='en' on entries and
+    documents that pre-date ADR-028. Idempotent."""
+    entries = db.ontology_entries.update_many(
+        {"language": {"$exists": False}}, {"$set": {"language": "en"}}
+    )
+    documents = db.documents.update_many(
+        {"language": {"$exists": False}}, {"$set": {"language": "en"}}
+    )
+    return {
+        "entries_stamped": entries.modified_count,
+        "documents_stamped": documents.modified_count,
+    }

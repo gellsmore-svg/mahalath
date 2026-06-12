@@ -84,6 +84,7 @@ def ingest_one(
     *,
     project_root: Path | None = None,
     style_overlay_path: str | None = None,
+    language: str = "en",
 ) -> IngestionResult:
     if not source_path.exists():
         raise IngestionError(f"Source file not found: {source_path}")
@@ -125,6 +126,7 @@ def ingest_one(
         byte_size=len(raw_bytes),
         char_count=len(text),
         style_overlay_path=style_overlay_path,
+        language=language,
     )
     docs.insert(record)
 
