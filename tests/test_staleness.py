@@ -452,7 +452,7 @@ def test_redefine_appends_def_and_clears_stale(mongo_db) -> None:
     assert stored.is_stale is False
     assert stored.stale_reasons == []
     assert len(stored.definitions) == 2
-    assert stored.definitions[-1].model_used == "rem_redefine"
+    assert stored.definitions[-1].model_used == "rem_redefine (mock-model)"
     assert "second concept" in stored.definitions[-1].text
 
 

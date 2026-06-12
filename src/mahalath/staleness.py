@@ -1110,7 +1110,11 @@ def redefine_stale_entry(
                 "definitions": {
                     "text": verdict.new_definition,
                     "language": "en",
-                    "model_used": "rem_redefine",
+                    # Pathway marker + the model that actually wrote it,
+                    # so the audit trail names the author (operator
+                    # request 2026-06-12; the in-session frontier
+                    # redefines exposed the gap).
+                    "model_used": f"rem_redefine ({response.model})",
                     "decision_log_id": None,
                     "context_id": context_id,
                     # Single-model verdict, not multi-agent agreement —
