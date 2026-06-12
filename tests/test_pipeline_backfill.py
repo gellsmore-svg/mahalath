@@ -240,3 +240,72 @@ def test_pipeline_intent_noop_without_taxonomy(
 
     ib = result["intent_backfill"]
     assert ib is not None and ib["attempted"] == 0 and ib["stored"] == 0
+
+
+# --- known-term guard (S2.41) -------------------------------------------------
+
+
+def _seed_existing_agonist(mongo_db, *, aliases=None) -> None:
+    from mahalath.db.models import OntologyEntry
+
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="Agonist", confidence=8.0,
+        aliases=aliases or [],
+        source_document_ids=["doc-original"],
+        definitions=[],
+    ))
+
+
+def test_pipeline_known_term_records_provenance_not_duplicate(
+    tmp_path: Path, mongo_config, mongo_db
+) -> None:
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    _seed_existing_agonist(mongo_db)  # casefold match: "agonist" vs "Agonist"
+    doc = _seed_document(tmp_path, mongo_db)
+    adapter = _adapter()
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, adapter, cfg,
+        max_terms=5,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+    )
+
+    assert result["ok"] is True
+    known = [d for d in result["debated"] if d["outcome"] == "already_known"]
+    assert known == [{"term": "agonist", "outcome": "already_known",
+                      "mpl_label": "MPL-001"}]
+    # No new entry; the existing one gained this document's provenance.
+    assert mongo_db.ontology_entries.count_documents({}) == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert set(stored.source_document_ids) == {"doc-original", doc.document_id}
+    # No debate happened: only the extraction call hit the adapter.
+    assert not any(
+        SPEAKER_TAG_PRECISION_CRITIC in c["prompt"] for c in adapter.calls
+    )
+
+
+def test_pipeline_known_alias_matches_too(
+    tmp_path: Path, mongo_config, mongo_db
+) -> None:
+    from mahalath.db.models import OntologyEntry
+
+    cfg = _config(tmp_path, mongo_config.mongo.database)
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-009", canonical_term="Receptor activator",
+        confidence=8.0, aliases=["Agonist"], definitions=[],
+    ))
+    doc = _seed_document(tmp_path, mongo_db)
+
+    result = _run_pipeline_on_document(
+        doc, mongo_db, _adapter(), cfg,
+        max_terms=5,
+        skip_hierarchy_review=True,
+        consensus_passes_override=None,
+        style_overlay=None,
+    )
+
+    known = [d for d in result["debated"] if d["outcome"] == "already_known"]
+    assert known and known[0]["mpl_label"] == "MPL-009"
+    assert mongo_db.ontology_entries.count_documents({}) == 1

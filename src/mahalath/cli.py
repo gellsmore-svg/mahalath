@@ -978,9 +978,43 @@ def _run_pipeline_on_document(
         for c in DefinitionContextRepository(db).all(kind="frame")
     ]
 
+    # Known-term guard (S2.41): a lexicon hosts many documents, so a
+    # candidate that already exists as a canonical term or alias is
+    # provenance, not a new concept — record this document on the
+    # existing entry's source_document_ids and skip the debate (no
+    # model spend, no duplicate MPL label). Known matches don't consume
+    # max_terms slots.
+    known_by_term: dict[str, str] = {}
+    for doc_ in db.ontology_entries.find(
+        {}, {"canonical_term": 1, "aliases": 1}
+    ):
+        known_by_term[doc_["canonical_term"].casefold()] = doc_["_id"]
+        for alias in doc_.get("aliases") or []:
+            known_by_term.setdefault(alias.casefold(), doc_["_id"])
+
     debated: list[dict[str, Any]] = []
     accepted_labels: set[str] = set()
-    for candidate in candidates[:max_terms]:
+    debates_run = 0
+    for candidate in candidates:
+        existing_label = known_by_term.get(candidate.term.casefold())
+        if existing_label is not None:
+            db.ontology_entries.update_one(
+                {"_id": existing_label},
+                {"$addToSet": {
+                    "source_document_ids": document.document_id,
+                }},
+            )
+            debated.append({
+                "term": candidate.term,
+                "outcome": "already_known",
+                "mpl_label": existing_label,
+            })
+            continue
+        if debates_run >= max_terms:
+            # Slots exhausted: stop debating, but keep sweeping the
+            # remaining candidates for known-term provenance (free).
+            continue
+        debates_run += 1
         try:
             debate_result = run_debate(
                 term=candidate.term,
@@ -1016,6 +1050,11 @@ def _run_pipeline_on_document(
             and persist_result.mpl_label is not None
         ):
             accepted_labels.add(persist_result.mpl_label)
+            # A duplicate candidate later in this run is provenance,
+            # not a second debate.
+            known_by_term.setdefault(
+                candidate.term.casefold(), persist_result.mpl_label
+            )
         if (
             not skip_hierarchy_review
             and persist_result.outcome == "accepted"
