@@ -554,3 +554,54 @@ def test_glossary_exports_intent_fields(mongo_db) -> None:
 
     md = export_markdown(mongo_db, database_name="x").output
     assert "_(deployed to: teach; intentionality: high)_" in md
+
+
+# --- scale-correction heuristic (S2.42) ---------------------------------------
+
+
+def test_fractional_confidence_rescaled_and_stored(mongo_db) -> None:
+    """The 0-1 scale quirk: 0.85/0.9/0.95 mean 8.5/9.0/9.5."""
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 0.85),
+        _verdict(["teach"], "high", 0.9),
+        _verdict(["teach"], "high", 0.95),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3, apply=True)
+    assert a.outcome == "stored"
+    assert a.intent_confidence == 8.5  # min of the rescaled values
+    assert all(p.get("confidence_rescaled_from") for p in a.per_pass)
+    d = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[0]
+    assert d.intent_confidence == 8.5
+
+
+def test_mixed_scales_rescale_only_fractional_passes(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 9.0),    # already 0-10
+        _verdict(["teach"], "high", 0.9),    # 0-1 quirk -> 9.0
+        _verdict(["teach"], "high", 8.5),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3)
+    assert a.outcome == "stored"
+    assert a.intent_confidence == 8.5
+    rescaled = [p for p in a.per_pass if "confidence_rescaled_from" in p]
+    assert len(rescaled) == 1 and rescaled[0]["confidence"] == 9.0
+
+
+def test_confidence_exactly_one_not_rescaled(mongo_db) -> None:
+    """1.0 is ambiguous between the scales; conservatively left alone,
+    so the gate withholds exactly as before the heuristic."""
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict(["teach"], "high", 1.0),
+        _verdict(["teach"], "high", 9.0),
+        _verdict(["teach"], "high", 9.0),
+    ])
+    a = attribute_intent(mongo_db, "MPL-001", 0, adapter, passes=3)
+    assert a.outcome == "below_threshold"
+    assert a.intent_confidence == 1.0
+    assert not any("confidence_rescaled_from" in p for p in a.per_pass)

@@ -342,15 +342,29 @@ def attribute_intent(
     for _ in range(max(1, passes)):
         response = adapter.generate(prompt, want_json=True)
         verdict = parse_intent_verdict(response.text)
-        verdicts.append(verdict)
-        per_pass.append(
-            {
+        pass_detail: dict
+        if verdict is None:
+            pass_detail = {"parse_failed": True}
+        else:
+            pass_detail = {
                 "intent_tags": verdict.intent_tags,
                 "intentionality": verdict.intentionality,
                 "confidence": verdict.confidence,
             }
-            if verdict is not None else {"parse_failed": True}
-        )
+            # Scale-correction heuristic (S2.42): small models sometimes
+            # answer on a 0-1 scale despite the prompt's 0-10 ask
+            # (observed 0.8-0.95; S2.38 watch-item, recurred in the
+            # GCSE merge run). A strictly-fractional confidence is read
+            # as 0-1 and rescaled; exactly 1.0 is ambiguous (full
+            # confidence on 0-1, near-zero on 0-10) so it is left
+            # alone — the conservative gate then withholds, as before.
+            if 0 < verdict.confidence < 1.0:
+                rescaled = round(verdict.confidence * 10.0, 4)
+                pass_detail["confidence_rescaled_from"] = verdict.confidence
+                pass_detail["confidence"] = rescaled
+                verdict.confidence = rescaled
+        verdicts.append(verdict)
+        per_pass.append(pass_detail)
 
     parsed = [v for v in verdicts if v is not None]
     result = IntentAttribution(
