@@ -314,3 +314,20 @@ def test_snapshot_appends_json_lines(mongo_db, tmp_path, monkeypatch) -> None:
     for line in lines:
         parsed = json.loads(line)
         assert parsed["database"] == TEST_DB_NAME
+
+
+def test_delegated_verdicts_excluded_from_calibration(mongo_db) -> None:
+    repo = ActionProposalRepository(mongo_db)
+    for conf in (8.0, 8.5, 9.0):
+        repo.insert(_proposal(conf, "accepted"))
+    # A delegate's verdict must not enter the operator-calibration data.
+    delegated = _proposal(9.5, "rejected")
+    delegated.decided_via = "claude_delegate"
+    repo.insert(delegated)
+
+    p = _report(mongo_db).proposals
+    assert p.operator_decided == 3
+    assert p.delegated_decided == 1
+    assert p.operator_rejected == 0  # the delegated rejection is not counted
+    high_band = next(b for b in p.bands if b.hi == 10.0)
+    assert high_band.decided == 3 and high_band.acceptance_rate == 1.0

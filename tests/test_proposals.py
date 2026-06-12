@@ -254,3 +254,32 @@ def test_rollback_rejects_non_applied(mongo_db) -> None:
     proposal = _pending_parent_proposal(mongo_db, "MPL-002", "MPL-001")
     with pytest.raises(ProposalError):
         rollback_proposal(proposal.proposal_id, mongo_db)
+
+
+def test_reject_records_decided_via(mongo_db) -> None:
+    from mahalath.actions import ProposeParent, dispatch
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import (
+        ActionProposalRepository,
+        OntologyEntryRepository,
+    )
+    from mahalath.proposals import reject_proposal
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(mpl_label="MPL-001", canonical_term="alpha",
+                              confidence=8.0))
+    repo.insert(OntologyEntry(mpl_label="MPL-002", canonical_term="beta",
+                              confidence=8.0))
+    # Confidence below the reparent threshold lands in pending_review.
+    outcome = dispatch(
+        ProposeParent(child_label="MPL-002", parent_label="MPL-001",
+                      reason="t", confidence=5.0),
+        mongo_db,
+    )
+    assert outcome.status == "pending_review"
+    reject_proposal(outcome.proposal_id, mongo_db,
+                    note="delegate verdict",
+                    decided_via="claude_delegate")
+    stored = ActionProposalRepository(mongo_db).get(outcome.proposal_id)
+    assert stored.operator_decision == "rejected"
+    assert stored.decided_via == "claude_delegate"

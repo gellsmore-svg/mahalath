@@ -98,7 +98,8 @@ def list_proposals(
 
 
 def accept_proposal(
-    proposal_id: str, db: Database, *, note: str | None = None
+    proposal_id: str, db: Database, *, note: str | None = None,
+    decided_via: str = "operator",
 ) -> OperatorActionResult:
     proposal = get_proposal(proposal_id, db)
     if proposal.status != "pending_review":
@@ -126,6 +127,7 @@ def accept_proposal(
                 "applied_at": now,
                 "operator_decision": "accepted",
                 "operator_decision_at": now,
+                "decided_via": decided_via,
                 "operator_note": note,
                 "application_result": application_result,
                 "rejection_reason": None,
@@ -142,7 +144,8 @@ def accept_proposal(
 
 
 def reject_proposal(
-    proposal_id: str, db: Database, *, note: str | None = None
+    proposal_id: str, db: Database, *, note: str | None = None,
+    decided_via: str = "operator",
 ) -> OperatorActionResult:
     proposal = get_proposal(proposal_id, db)
     if proposal.status != "pending_review":
@@ -158,6 +161,7 @@ def reject_proposal(
                 "status": "rejected",
                 "operator_decision": "rejected",
                 "operator_decision_at": now,
+                "decided_via": decided_via,
                 "operator_note": note,
             }
         },
@@ -171,7 +175,8 @@ def reject_proposal(
 
 
 def rollback_proposal(
-    proposal_id: str, db: Database, *, note: str | None = None
+    proposal_id: str, db: Database, *, note: str | None = None,
+    decided_via: str = "operator",
 ) -> OperatorActionResult:
     proposal = get_proposal(proposal_id, db)
     if proposal.status != "applied":
@@ -206,6 +211,7 @@ def rollback_proposal(
                 "status": "rolled_back",
                 "operator_decision": "rolled_back",
                 "operator_decision_at": now,
+                "decided_via": decided_via,
                 "operator_note": note,
                 "application_result": new_application_result,
             }

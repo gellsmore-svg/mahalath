@@ -246,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
             "--note", default=None,
             help="Optional operator note recorded with the decision.",
         )
+        parser_.add_argument(
+            "--decided-via", choices=["operator", "claude_delegate"],
+            default="operator",
+            help="Who is rendering this verdict. Use claude_delegate "
+            "when an LLM acts on delegated authority, so the §3.4 "
+            "calibration metric can exclude it (default: operator).",
+        )
 
     list_contexts_parser = subcommands.add_parser(
         "list-contexts",
@@ -558,17 +565,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "accept-proposal":
         return _operator_decision(
-            config, args.proposal_id, kind="accept", note=args.note
+            config, args.proposal_id, kind="accept", note=args.note,
+            decided_via=args.decided_via,
         )
 
     if args.command == "reject-proposal":
         return _operator_decision(
-            config, args.proposal_id, kind="reject", note=args.note
+            config, args.proposal_id, kind="reject", note=args.note,
+            decided_via=args.decided_via,
         )
 
     if args.command == "rollback-proposal":
         return _operator_decision(
-            config, args.proposal_id, kind="rollback", note=args.note
+            config, args.proposal_id, kind="rollback", note=args.note,
+            decided_via=args.decided_via,
         )
 
     if args.command == "effectiveness":
@@ -1368,7 +1378,8 @@ def _show_proposal(config: AppConfig, proposal_id: str) -> int:
 
 
 def _operator_decision(
-    config: AppConfig, proposal_id: str, *, kind: str, note: str | None
+    config: AppConfig, proposal_id: str, *, kind: str, note: str | None,
+    decided_via: str = "operator",
 ) -> int:
     from mahalath.db import close_all, get_database
     from mahalath.proposals import (
@@ -1391,7 +1402,7 @@ def _operator_decision(
     }[kind]
 
     try:
-        result = fn(proposal_id, db, note=note)
+        result = fn(proposal_id, db, note=note, decided_via=decided_via)
     except ProposalError as exc:
         print(f"mahalath: {exc}", file=sys.stderr)
         return 9

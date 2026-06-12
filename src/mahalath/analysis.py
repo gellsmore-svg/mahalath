@@ -79,6 +79,12 @@ class ProposalStats:
     operator_accepted: int = 0
     operator_rejected: int = 0
     operator_rolled_back: int = 0
+    # Verdicts rendered by an LLM on delegated authority
+    # (decided_via="claude_delegate"). Counted separately and EXCLUDED
+    # from the calibration bands: the metric asks whether agent
+    # confidence predicts *human* agreement, and a delegate's verdicts
+    # would let the model grade its own homework.
+    delegated_decided: int = 0
     avg_confidence_accepted: float | None = None
     avg_confidence_rejected: float | None = None
     bands: list[CalibrationBand] = field(default_factory=list)
@@ -216,10 +222,17 @@ def _proposal_stats(db: Database) -> ProposalStats:
 
     # The calibration dataset: every proposal the operator ruled on,
     # joined back to the confidence the agent stated when proposing it.
-    decided = list(db.action_proposals.find(
+    # Delegated verdicts (an LLM acting for the operator) are counted
+    # but excluded — legacy rows without decided_via read as operator.
+    all_decided = list(db.action_proposals.find(
         {"operator_decision": {"$in": list(_DECIDED)}},
-        {"confidence": 1, "operator_decision": 1},
+        {"confidence": 1, "operator_decision": 1, "decided_via": 1},
     ))
+    decided = [
+        d for d in all_decided
+        if d.get("decided_via") != "claude_delegate"
+    ]
+    stats.delegated_decided = len(all_decided) - len(decided)
     stats.operator_decided = len(decided)
 
     bands = [CalibrationBand(lo=lo, hi=hi) for lo, hi in _BAND_EDGES]
@@ -542,7 +555,10 @@ def render_report_lines(report: EffectivenessReport) -> list[str]:
         f"  by action type: {counts(p.by_action_type)}",
         f"  operator decided: {p.operator_decided} "
         f"(accepted={p.operator_accepted}, rejected={p.operator_rejected}, "
-        f"rolled_back={p.operator_rolled_back})",
+        f"rolled_back={p.operator_rolled_back})"
+        + (f" — plus {p.delegated_decided} delegated verdict(s), "
+           "excluded from calibration"
+           if p.delegated_decided else ""),
     ]
     if p.avg_confidence_accepted is not None or p.avg_confidence_rejected is not None:
         lines.append(

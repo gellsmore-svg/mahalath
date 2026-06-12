@@ -309,7 +309,13 @@ class ActionProposal(_MahalathModel):
     application_result: dict[str, Any] = Field(default_factory=dict)
     # Operator decision trail. operator_decision is one of:
     # accepted | rejected | rolled_back | None (no operator action taken).
+    # decided_via records WHO rendered that verdict: "operator" (the
+    # human; also the reading for legacy None) or "claude_delegate"
+    # (Claude acting on delegated authority in a CLI session). The
+    # §3.4 calibration metric counts only genuine operator verdicts,
+    # so delegated ones must be distinguishable in data, not prose.
     operator_decision: str | None = None
     operator_decision_at: datetime | None = None
     operator_note: str | None = None
+    decided_via: str | None = None
     schema_version: int = SCHEMA_VERSION
