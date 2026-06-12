@@ -1,12 +1,14 @@
 # Mahalath
 
-Self-sustaining multi-agent ontology builder. Drop Markdown documents into `input/`, walk away, and come back to a definitionally-sharp glossary with parent/child relationships, polysemy-aware definitions, full provenance, and operator-reviewable proposal queues — plus a retrieval API that lets another LLM reason in the ontology's precise internal terms instead of ambiguous English.
+Self-sustaining multi-agent ontology builder. Drop Markdown documents into `input/`, walk away, and come back to a definitionally-sharp glossary with parent/child relationships, polysemy-aware definitions, full provenance, and operator-reviewable proposal queues — plus a retrieval API that lets another LLM reason in the ontology's precise internal terms instead of ambiguous natural language.
 
 The system is **local-first** (MongoDB + Ollama by default) with optional **frontier-LLM review** (Anthropic Claude API) for queue items the local model isn't confident about.
 
 ## The idea
 
-Natural language is ambiguous; AI-to-AI reasoning suffers for it. Mahalath ingests a corpus — any corpus: a legal code, an engineering handbook, a research field's literature, a novel — and continuously refines a precise internal language (**MPL**): every concept gets an opaque, immutable label (`MPL-004`), one or more debated definitions, a place in a hierarchy, and a full audit trail. Human words are treated as approximate interfaces onto that machine-native concept space — a single term can hold several co-equal meanings, each keyed by the *frame* it speaks within (a `field` is one thing to a physicist, another to a farmer, another to a database designer). A consuming LLM retrieves by human term, receives every codified meaning with provenance, and cites the `(MPL label, frame)` pair it kept.
+Natural language is ambiguous; AI-to-AI reasoning suffers for it. Mahalath ingests a corpus — any corpus: a legal code, an engineering handbook, a research field's literature, a novel — and continuously refines a precise **lexicon of meanings**: every meaning gets an opaque, immutable label (`MPL-004`), one or more debated definitions, a place in a hierarchy, and a full audit trail. Human words are approximate interfaces onto the lexicon's meanings — a single term can hold several co-equal meanings, each keyed by the *frame* it speaks within (a `field` is one thing to a physicist, another to a farmer, another to a database designer). A consuming LLM retrieves by human term, receives every codified meaning with provenance, and cites the `(MPL label, frame)` pair it kept.
+
+A lexicon belongs to **one language** (the live one is English). Languages are discrete peers, never derived from each other: a German lexicon would be built from German evidence with its own tree, because terms across languages are rarely, if ever, like-for-like — which is the reason the system exists. Labels are opaque and drawn from one global sequence, but each addresses a meaning *within its language's lexicon*; there is no language-independent "concept" node above them. Cross-language relationships, when built (ADR-028–030, phased on the backlog), are explicit, weighted, debated **mapping assertions** — supporting translation drafting/review and cross-language comparison of *illocution* (how each language deploys the term, which is part of its meaning) — never translation at ingestion.
 
 ## What it does
 
@@ -174,17 +176,18 @@ Nine MongoDB collections: `documents`, `ontology_entries` (`_id` = MPL label), `
 
 - **Labels are immutable and opaque** — re-parenting moves tree edges, never the label; no semantics in the key (ADR-018/021).
 - **Human labels are approximate interfaces, not the ontology** (ADR-019).
+- **Languages are discrete peer lexicons** — a label addresses a meaning within one language's lexicon; cross-language equivalence is only ever an explicit, debated mapping assertion, and locale is metadata, never structure (ADR-028/029/030).
 - **Retrieval surfaces all frames; the caller disambiguates** (ADR-022). **Returned meanings are reference-closed** (ADR-023).
 - **Intent annotates definitions; it never creates entries or enters labels** (ADR-024).
 - **Everything is auditable** — every accepted definition links to its debate transcript; every structural change is a proposal with a rollback path.
 
 - **Self-analysis is read-only and file-snapshotted** — the effectiveness layer aggregates the audit trails it reports on but can never write to them (ADR-027).
 
-The full decision record (27 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
+The full decision record (30 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
 
 ## Status
 
-Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP), the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), and nightly decision-effectiveness self-analysis (§3.4), validated against the live corpus and applied across all databases. **388 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
+Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP), the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), and nightly decision-effectiveness self-analysis (§3.4), validated against the live corpus and applied against the live lexicon. The multilingual architecture is accepted and phased (ADR-028–030); the live lexicon is English. **398 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
 
 ## License
 
