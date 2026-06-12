@@ -349,3 +349,39 @@ def test_detail_page_no_intent_badges_when_unannotated(app_client, mongo_db) -> 
     r = app_client.get("/ontology/MPL-001")
     assert r.status_code == 200
     assert 'badge intent' not in r.text
+
+
+# --- decision-effectiveness page + API (§3.4) ---------------------------------
+
+
+def test_effectiveness_page_renders(app_client, mongo_db) -> None:
+    from mahalath.db.models import ActionProposal
+    from mahalath.db.repositories import ActionProposalRepository
+
+    _seed_two_entries(mongo_db)
+    ActionProposalRepository(mongo_db).insert(ActionProposal(
+        action_type="propose_parent", confidence=9.0,
+        status="pending_review", operator_decision="accepted",
+    ))
+    r = app_client.get("/effectiveness")
+    assert r.status_code == 200
+    assert "Decision effectiveness" in r.text
+    assert "Findings" in r.text
+    assert "Calibration" in r.text
+
+
+def test_effectiveness_page_empty_db(app_client) -> None:
+    r = app_client.get("/effectiveness")
+    assert r.status_code == 200
+    assert "not enough operator decisions" in r.text
+
+
+def test_api_effectiveness_returns_report(app_client, mongo_db) -> None:
+    _seed_two_entries(mongo_db)
+    r = app_client.get("/api/effectiveness")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["coverage"]["entries"] == 2
+    assert "findings" in report and report["findings"]

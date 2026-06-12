@@ -123,6 +123,7 @@ def _base(title: str, body: str, database: str) -> str:
     <a href="/proposals">All proposals</a>
     <a href="/undecided">Undecided</a>
     <a href="/documents">Documents</a>
+    <a href="/effectiveness">Effectiveness</a>
     <a href="/chat">Chat</a>
     <span class="muted" style="float:right">{escape(database)}</span>
   </nav>
@@ -519,6 +520,110 @@ def _register_routes(app: FastAPI) -> None:
 </table>
 """
         return _base("Undecided", body, config.mongo.database)
+
+    @app.get("/effectiveness", response_class=HTMLResponse)
+    def effectiveness_page(request: Request) -> str:
+        """Decision-effectiveness self-analysis (requirements §3.4)."""
+        from mahalath.analysis import build_effectiveness_report
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        report = build_effectiveness_report(
+            db, database_name=config.mongo.database
+        )
+        d, p, q, v, c = (
+            report.debates, report.proposals, report.queue,
+            report.reviews, report.coverage,
+        )
+
+        def pct(value: float | None) -> str:
+            return f"{value * 100:.0f}%" if value is not None else "—"
+
+        findings = "".join(
+            f'<div class="reason">{escape(f)}</div>' for f in report.findings
+        )
+        cards = "".join(
+            f'<div class="card"><div class="n">{escape(str(n))}</div>'
+            f'<div class="label">{escape(label)}</div></div>'
+            for label, n in [
+                ("debate acceptance", pct(d.acceptance_rate)),
+                ("operator-decided proposals", p.operator_decided),
+                ("undecided queue", q.size),
+                ("re-debate resolution", pct(report.redebates.resolution_rate)),
+                ("stale entries", c.stale_entries),
+            ]
+        )
+
+        outcome_rows = "".join(
+            f"<tr><td><code>{escape(outcome)}</code></td><td>{n}</td>"
+            f"<td>{d.avg_iterations_by_outcome.get(outcome, '—')}</td>"
+            f"<td>{d.avg_confidence_by_outcome.get(outcome, '—')}</td></tr>"
+            for outcome, n in sorted(d.by_outcome.items())
+        ) or '<tr><td colspan="4" class="muted">(no debates yet)</td></tr>'
+
+        band_rows = "".join(
+            f"<tr><td>{band.lo:g}–{band.hi:g}</td><td>{band.decided}</td>"
+            f"<td>{band.accepted}</td><td>{band.rejected}</td>"
+            f"<td>{band.rolled_back}</td><td>{pct(band.acceptance_rate)}</td></tr>"
+            for band in p.bands if band.decided
+        ) or (
+            '<tr><td colspan="6" class="muted">(no operator-decided '
+            "proposals yet)</td></tr>"
+        )
+
+        review_summary = (
+            f"{v.total} passes · {v.with_actions} with actions · "
+            f"no-action rate {pct(v.no_action_rate)} · avg actions "
+            f"{v.avg_actions if v.avg_actions is not None else '—'}"
+            if v.total else "(no hierarchy reviews yet)"
+        )
+
+        body = f"""
+<h1>Decision effectiveness</h1>
+<p class="muted">Self-analysis over the audit trails (requirements §3.4).
+Generated {_iso(report.generated_at)} · also appended nightly to
+<code>logs/effectiveness.jsonl</code> by the REM job ·
+<a href="/api/effectiveness">JSON</a></p>
+<div class="summary">{cards}</div>
+<h2>Findings</h2>
+{findings}
+<h2>Debate outcomes</h2>
+<table>
+<tr><th>Outcome</th><th>Count</th><th>Avg iterations</th><th>Avg confidence</th></tr>
+{outcome_rows}
+</table>
+<h2>Calibration — operator verdicts by agent confidence</h2>
+<p class="muted">Each band: how often the operator accepted proposals the
+agents made at that confidence. Rising acceptance with confidence =
+calibrated.</p>
+<table>
+<tr><th>Confidence band</th><th>Decided</th><th>Accepted</th><th>Rejected</th><th>Rolled back</th><th>Acceptance</th></tr>
+{band_rows}
+</table>
+<h2>Hierarchy reviews</h2>
+<p>{escape(review_summary)}</p>
+<h2>Coverage</h2>
+<p>{c.entries} entries (avg confidence
+{c.avg_entry_confidence if c.avg_entry_confidence is not None else "—"}) ·
+{c.definitions} definitions ({c.frame_tagged} frame-tagged,
+{c.intent_annotated} intent-annotated) · {c.stale_entries} stale</p>
+"""
+        return _base("Effectiveness", body, config.mongo.database)
+
+    @app.get("/api/effectiveness")
+    def effectiveness_api(request: Request) -> JSONResponse:
+        """The same §3.4 report as machine-readable JSON."""
+        from mahalath.analysis import (
+            build_effectiveness_report,
+            report_to_dict,
+        )
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        report = build_effectiveness_report(
+            db, database_name=config.mongo.database
+        )
+        return JSONResponse({"ok": True, "report": report_to_dict(report)})
 
     @app.get("/chat", response_class=HTMLResponse)
     def chat_page(request: Request) -> str:

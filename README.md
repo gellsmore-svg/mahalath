@@ -53,6 +53,10 @@ The same renderer backs retrieval text and the chat context block, so every cons
 
 Beyond *what a term means*: *why the corpus deploys it* (speech-act illocution — teach, persuade, reassure, warn, …). Governed by hard guardrails (ADR-024/025/026): intent annotates definitions as source-deployment metadata; it never creates entries, never partitions an entry, never enters a label; intentionality is ordinal (low/medium/high), never a pseudo-precise float. All model-sourced tags pass an **N-pass unanimity gate** — a tag is stored only if every independent attribution pass proposes it, the ordinal only if all passes agree, and below-threshold attributions are withheld for operator review. The gate was validated empirically before rollout (15/15 unanimous attributions on real corpora, with minority tags and disagreed ordinals visibly dropped). New entries are attributed automatically at the pipeline tail; `backfill-intents` sweeps legacy definitions; retrieval filters by intent (`--intent teach`) without letting intent alter ranking.
 
+### Decision-effectiveness self-analysis
+
+The system periodically audits its own decision-making (`analysis.py`, read-only over the audit trails). The headline is **calibration**: every operator accept/reject/rollback on an agent proposal is a labelled data point for the confidence the agent stated when proposing — if operator acceptance doesn't rise with agent confidence, the threshold knobs are tuning noise, and the report says so in plain language. Also covered: debate outcome/iteration stats, REM re-debate resolution arcs (undecided → later accepted), undecided-queue health (items stuck at max escalation), hierarchy-review yield, and frame/intent coverage. Surfaced as `mahalath effectiveness` (text or JSON), the `/effectiveness` web page, `GET /api/effectiveness`, and a nightly JSON-line snapshot appended to `logs/effectiveness.jsonl` by the REM job.
+
 ## Quick start
 
 ```bash
@@ -130,6 +134,7 @@ The overlay is injected into every agent prompt (extraction, debate, hierarchy r
 | Hierarchy / proposals | `list-proposals`, `show-proposal`, `accept-proposal`, `reject-proposal`, `rollback-proposal` |
 | Frames + intents | `list-contexts`, `add-context`, `show-context`, `seed-intents`, `backfill-contexts`, `backfill-intents` |
 | Self-healing | `list-stale`, `audit-stale`, `redefine-stale`, `backfill-references`, `backfill-paths` |
+| Self-analysis | `effectiveness` (incl. `--format json`, `--snapshot`) |
 | Review + serving | `frontier-review`, `serve`, `run` |
 
 ## Architecture
@@ -151,6 +156,7 @@ src/mahalath/
 ├── staleness.py         reference tracking + staleness cascade + audit/redefine self-healing
 ├── paths.py             materialised ancestor paths (insert / re-parent / rollback maintenance)
 ├── retrieval.py         typed read view: search, codified refs, budgeted bundles, propose_term
+├── analysis.py          decision-effectiveness self-analysis (§3.4): calibration, queue health, findings
 ├── intents.py           governed intent taxonomy (illocution tags) + idempotent seeder
 ├── chat.py              grounded NL Q&A over the ontology + tool-call action proposals
 ├── glossary.py          export to Markdown + JSON (frame-grouped), auto-refresh on change
@@ -172,11 +178,13 @@ Nine MongoDB collections: `documents`, `ontology_entries` (`_id` = MPL label), `
 - **Intent annotates definitions; it never creates entries or enters labels** (ADR-024).
 - **Everything is auditable** — every accepted definition links to its debate transcript; every structural change is a proposal with a rollback path.
 
-The full decision record (26 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
+- **Self-analysis is read-only and file-snapshotted** — the effectiveness layer aggregates the audit trails it reports on but can never write to them (ADR-027).
+
+The full decision record (27 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
 
 ## Status
 
-Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP) and the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), validated against the live corpus and applied across all databases. **371 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
+Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP), the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), and nightly decision-effectiveness self-analysis (§3.4), validated against the live corpus and applied across all databases. **388 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
 
 ## License
 

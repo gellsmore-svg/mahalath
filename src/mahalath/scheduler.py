@@ -187,3 +187,21 @@ def _default_rem_job(config: AppConfig) -> None:
             "scheduler: REM refreshed glossary (md=%d entries, json=%d entries)",
             exports["md"].entry_count, exports["json"].entry_count,
         )
+
+    # Periodic self-analysis of decision-making effectiveness (§3.4).
+    # Read-only over the audit trails; one JSON line per night accrues
+    # in logs/effectiveness.jsonl. Never allowed to fail the REM job.
+    try:
+        from mahalath.analysis import (
+            build_effectiveness_report,
+            write_effectiveness_snapshot,
+        )
+        report = build_effectiveness_report(
+            db, database_name=config.mongo.database
+        )
+        snapshot_path = write_effectiveness_snapshot(config, report)
+        log.info("scheduler: effectiveness snapshot → %s", snapshot_path)
+        for finding in report.findings:
+            log.info("scheduler: effectiveness: %s", finding)
+    except Exception:
+        log.exception("scheduler: effectiveness self-analysis failed")

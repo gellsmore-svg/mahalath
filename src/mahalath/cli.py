@@ -458,6 +458,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Override rem.cron for this run.",
     )
 
+    effectiveness_parser = subcommands.add_parser(
+        "effectiveness",
+        help="Self-analysis of decision-making effectiveness (§3.4): "
+        "debate outcomes, operator-vs-confidence calibration, queue "
+        "health, re-debate resolution, review yield.",
+    )
+    effectiveness_parser.add_argument(
+        "--format", choices=["text", "json"], default="text",
+        help="Output format (default: text).",
+    )
+    effectiveness_parser.add_argument(
+        "--snapshot", action="store_true",
+        help="Also append the report as one JSON line to "
+        "logs/effectiveness.jsonl (what the nightly REM job does).",
+    )
+
     export_glossary_parser = subcommands.add_parser(
         "export-glossary",
         help="Export the ontology as a Markdown or JSON glossary.",
@@ -548,6 +564,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rollback-proposal":
         return _operator_decision(
             config, args.proposal_id, kind="rollback", note=args.note
+        )
+
+    if args.command == "effectiveness":
+        return _effectiveness(
+            config, out_format=args.format, snapshot=args.snapshot
         )
 
     if args.command == "export-glossary":
@@ -1637,6 +1658,39 @@ def _list_stale(config: AppConfig) -> int:
             ],
         }
         print(json.dumps(payload, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _effectiveness(
+    config: AppConfig, *, out_format: str, snapshot: bool
+) -> int:
+    from mahalath.analysis import (
+        build_effectiveness_report,
+        render_report_lines,
+        report_to_dict,
+        write_effectiveness_snapshot,
+    )
+    from mahalath.db import close_all, get_database
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        report = build_effectiveness_report(
+            db, database_name=config.mongo.database
+        )
+        if out_format == "json":
+            print(json.dumps(report_to_dict(report), indent=2))
+        else:
+            print("\n".join(render_report_lines(report)))
+        if snapshot:
+            path = write_effectiveness_snapshot(config, report)
+            print(f"\nsnapshot appended: {path}", file=sys.stderr)
         return 0
     finally:
         close_all()

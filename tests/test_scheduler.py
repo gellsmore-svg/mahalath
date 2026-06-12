@@ -44,12 +44,18 @@ def test_once_skips_rem_when_disabled() -> None:
     assert calls == ["process"]
 
 
-def test_default_rem_job_counts_undecided(mongo_db, mongo_config) -> None:
+def test_default_rem_job_counts_undecided(
+    mongo_db, mongo_config, tmp_path, monkeypatch
+) -> None:
     """Default REM job must run cleanly even with an empty undecided queue."""
     # Stand up a config that uses the test database the mongo_db fixture
-    # opens, so the default REM job hits a real (empty) collection.
+    # opens, so the default REM job hits a real (empty) collection. The
+    # job tail writes the effectiveness snapshot to cwd-relative logs/,
+    # so run from a temp dir to keep the repo's logs/ test-free.
+    monkeypatch.chdir(tmp_path)
     _default_rem_job(mongo_config)
-    # No assertion needed; the contract is "does not raise".
+    snapshot = tmp_path / "logs" / "effectiveness.jsonl"
+    assert snapshot.exists() and snapshot.read_text().count("\n") == 1
 
 
 def test_once_passes_through_overrides() -> None:
