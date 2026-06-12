@@ -104,7 +104,7 @@ class DefinitionContext(_MahalathModel):
     context_id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
     description: str
-    kind: Literal["frame", "intent"] = "frame"
+    kind: Literal["frame", "intent", "mapping_relation"] = "frame"
     created_at: datetime = Field(default_factory=_utcnow)
     created_by: str | None = None
     schema_version: int = SCHEMA_VERSION
@@ -195,6 +195,46 @@ class OntologyEntry(_MahalathModel):
     source_document_ids: list[str] = Field(default_factory=list)
     decision_log_id: str | None = None
     references_labels: list[str] = Field(default_factory=list)
+    is_stale: bool = False
+    stale_reasons: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION
+
+
+class Mapping(_MahalathModel):
+    """A cross-language semantic assertion between two lexicon entries
+    (ADR-029). NOT a translation: the relationship is typed (governed
+    `kind="mapping_relation"` taxonomy), confidence-gated, debated, and
+    auditable. `status` lifecycle: accepted | rejected | unresolved.
+
+    `relationship` reads source-relative: narrower_than means the
+    SOURCE term's meaning is narrower than the target's. equivalent
+    and partial_overlap are symmetric.
+
+    `illocution_comparison` records how each language DEPLOYS the term
+    (intent-tag profiles + divergence) — deployment divergence is
+    translation-risk signal in its own right, computable because
+    intent is attributed per-lexicon before any mapping exists.
+
+    Mappings participate in the staleness cascade: redefining either
+    endpoint flags the mapping for re-audit.
+    """
+
+    mapping_id: str = Field(default_factory=lambda: str(uuid4()))
+    source_label: str
+    target_label: str
+    source_language: str
+    target_language: str
+    relationship: str                       # taxonomy NAME snapshot
+    relationship_id: str | None = None      # taxonomy context_id
+    confidence: float = 0.0                 # min across passes, 0-10
+    rationale: str = ""
+    illocution_comparison: dict[str, Any] = Field(default_factory=dict)
+    status: str = "unresolved"
+    per_pass: list[dict[str, Any]] = Field(default_factory=list)
+    models_used: list[str] = Field(default_factory=list)
+    decided_via: str | None = None
     is_stale: bool = False
     stale_reasons: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)

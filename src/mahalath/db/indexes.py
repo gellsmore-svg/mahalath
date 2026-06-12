@@ -121,6 +121,22 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.ontology_reviews.create_index([("created_at", DESCENDING)]),
     ]
 
+    created["mappings"] = [
+        db.mappings.create_index("mapping_id", unique=True),
+        db.mappings.create_index("source_label"),
+        db.mappings.create_index("target_label"),
+        db.mappings.create_index("status"),
+        db.mappings.create_index("is_stale"),
+        db.mappings.create_index(
+            [("source_language", ASCENDING), ("target_language", ASCENDING)]
+        ),
+        # One assertion per (pair, relationship); re-attribution updates.
+        db.mappings.create_index(
+            [("source_label", ASCENDING), ("target_label", ASCENDING)],
+            unique=True,
+        ),
+    ]
+
     created["definition_contexts"] = [
         db.definition_contexts.create_index("context_id", unique=True),
         db.definition_contexts.create_index("name", unique=True),

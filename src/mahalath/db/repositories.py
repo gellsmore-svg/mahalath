@@ -18,6 +18,7 @@ from pymongo.database import Database
 
 from mahalath.db.models import (
     ActionProposal,
+    Mapping,
     AgentExchange,
     DecisionLogEntry,
     DefinitionContext,
@@ -256,4 +257,47 @@ class ActionProposalRepository:
             for doc in self._col.find(
                 {"source_ontology_review_id": review_id}
             ).sort("created_at", 1)
+        ]
+
+
+class MappingRepository:
+    def __init__(self, db: Database) -> None:
+        self._col: Collection = db.mappings
+
+    def insert(self, mapping: Mapping) -> Mapping:
+        self._col.insert_one(mapping.model_dump())
+        return mapping
+
+    def get(self, mapping_id: str) -> Mapping | None:
+        doc = self._col.find_one({"mapping_id": mapping_id})
+        return Mapping.model_validate(doc) if doc else None
+
+    def get_pair(self, source_label: str, target_label: str) -> Mapping | None:
+        doc = self._col.find_one(
+            {"source_label": source_label, "target_label": target_label}
+        )
+        return Mapping.model_validate(doc) if doc else None
+
+    def by_status(self, status: str) -> list[Mapping]:
+        return [
+            Mapping.model_validate(doc)
+            for doc in self._col.find({"status": status}).sort("created_at", 1)
+        ]
+
+    def for_label(self, mpl_label: str) -> list[Mapping]:
+        """Mappings touching this entry on either end."""
+        return [
+            Mapping.model_validate(doc)
+            for doc in self._col.find({
+                "$or": [
+                    {"source_label": mpl_label},
+                    {"target_label": mpl_label},
+                ]
+            }).sort("created_at", 1)
+        ]
+
+    def all(self) -> list[Mapping]:
+        return [
+            Mapping.model_validate(doc)
+            for doc in self._col.find().sort("created_at", 1)
         ]

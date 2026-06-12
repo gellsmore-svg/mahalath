@@ -261,6 +261,13 @@ def mark_dependents_stale(
     """
     if visited is None:
         visited = set()
+        # Top-level invocation only: flag cross-language mappings whose
+        # either endpoint changed (ADR-029 staleness participation).
+        # Mappings don't cascade further — they have no dependents.
+        from mahalath.mappings import mark_mappings_stale
+        mark_mappings_stale(
+            db, upstream_label, change_type=change_type, note=note,
+        )
     if upstream_label in visited:
         return []
     visited.add(upstream_label)

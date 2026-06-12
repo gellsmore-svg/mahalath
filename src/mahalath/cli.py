@@ -370,6 +370,36 @@ def main(argv: list[str] | None = None) -> int:
         "documents that pre-date the M-A multilingual slice (ADR-028).",
     )
 
+    seed_relations_parser = subcommands.add_parser(
+        "seed-mapping-relations",
+        help="Seed the standard cross-language relationship taxonomy "
+        "(equivalent, partial_overlap, narrower_than, broader_than). "
+        "Idempotent.",
+    )
+    seed_relations_parser.add_argument("--dry-run", action="store_true")
+
+    genmap_parser = subcommands.add_parser(
+        "generate-mappings",
+        help="Scout candidate cross-language pairs and run the gated "
+        "attribution (ADR-029). Dry-run by default; --apply stores.",
+    )
+    genmap_parser.add_argument("--source-language", required=True)
+    genmap_parser.add_argument("--target-language", required=True)
+    genmap_parser.add_argument("--max-items", type=int, default=20)
+    genmap_parser.add_argument("--passes", type=int, default=None)
+    genmap_parser.add_argument("--apply", action="store_true")
+    genmap_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter name (default: runtime.model_adapter).",
+    )
+
+    listmap_parser = subcommands.add_parser(
+        "list-mappings",
+        help="List stored cross-language mappings.",
+    )
+    listmap_parser.add_argument("--status", default=None,
+                                choices=["accepted", "rejected", "unresolved"])
+
     subcommands.add_parser(
         "backfill-paths",
         help="One-shot migration: recompute the materialised ancestor "
@@ -666,6 +696,23 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "backfill-references":
         return _backfill_references(config)
+
+    if args.command == "seed-mapping-relations":
+        return _seed_mapping_relations(config, dry_run=args.dry_run)
+
+    if args.command == "generate-mappings":
+        return _generate_mappings(
+            config,
+            source_language=args.source_language,
+            target_language=args.target_language,
+            max_items=args.max_items,
+            passes=args.passes,
+            apply_flag=args.apply,
+            adapter_name=args.adapter,
+        )
+
+    if args.command == "list-mappings":
+        return _list_mappings(config, status=args.status)
 
     if args.command == "backfill-language":
         return _backfill_language(config)
@@ -1795,6 +1842,108 @@ def _backfill_references(config: AppConfig) -> int:
     try:
         result = backfill_references(db)
         print(json.dumps({"ok": True, **result}, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _seed_mapping_relations(config: AppConfig, *, dry_run: bool) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.mappings import seed_mapping_relations
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+    try:
+        result = seed_mapping_relations(db, dry_run=dry_run)
+        print(json.dumps({"ok": True, "dry_run": dry_run, **result}, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _generate_mappings(
+    config: AppConfig,
+    *,
+    source_language: str,
+    target_language: str,
+    max_items: int,
+    passes: int | None,
+    apply_flag: bool,
+    adapter_name: str | None,
+) -> int:
+    import logging as _logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.mappings import generate_mappings
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+        result = generate_mappings(
+            config, db, adapter,
+            source_language=source_language,
+            target_language=target_language,
+            max_items=max_items,
+            passes=passes,
+            apply=apply_flag,
+        )
+        print(json.dumps({
+            "ok": True,
+            "applied": apply_flag,
+            "source_language": source_language,
+            "target_language": target_language,
+            **result.to_dict(),
+        }, indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _list_mappings(config: AppConfig, *, status: str | None) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.db.repositories import MappingRepository
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+    try:
+        repo = MappingRepository(db)
+        items = repo.by_status(status) if status else repo.all()
+        print(json.dumps({
+            "ok": True,
+            "count": len(items),
+            "mappings": [
+                {
+                    "mapping_id": m.mapping_id,
+                    "pair": f"{m.source_label} ({m.source_language}) -> "
+                            f"{m.target_label} ({m.target_language})",
+                    "relationship": m.relationship,
+                    "confidence": m.confidence,
+                    "status": m.status,
+                    "is_stale": m.is_stale,
+                    "rationale": m.rationale,
+                    "illocution_comparison": m.illocution_comparison,
+                }
+                for m in items
+            ],
+        }, indent=2, default=str))
         return 0
     finally:
         close_all()

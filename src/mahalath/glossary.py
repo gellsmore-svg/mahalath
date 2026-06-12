@@ -198,6 +198,7 @@ def _render_markdown(
         lines.append(f"## {e.mpl_label} — {e.canonical_term}")
         lines.append("")
         lines.append(
+            f"**Language:** {e.language} · "
             f"**Confidence:** {e.confidence:.1f} · "
             f"**Status:** {e.status} · "
             f"**Parent:** {parent_display}"
@@ -296,6 +297,7 @@ def _build_json_payload(
             {
                 "mpl_label": ec.entry.mpl_label,
                 "canonical_term": ec.entry.canonical_term,
+                "language": ec.entry.language,
                 "aliases": list(ec.entry.aliases),
                 "parent_label": ec.entry.parent_label,
                 "children": list(ec.children),
