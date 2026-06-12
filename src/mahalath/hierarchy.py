@@ -259,12 +259,17 @@ def _hashable(value: Any) -> Any:
 def _snapshot(
     entries: OntologyEntryRepository, focus_label: str, *, limit: int
 ) -> list[OntologyEntry]:
+    # Candidates come from the focus entry's own lexicon only
+    # (ADR-028): trees never cross languages, so showing the reviewer
+    # other-language entries could only produce invalid proposals.
+    focus = entries.get(focus_label)
+    focus_language = focus.language if focus is not None else "en"
     snapshot: list[OntologyEntry] = []
     for label in sorted(entries.all_labels()):
         if label == focus_label:
             continue
         entry = entries.get(label)
-        if entry is None:
+        if entry is None or entry.language != focus_language:
             continue
         snapshot.append(entry)
         if len(snapshot) >= limit:

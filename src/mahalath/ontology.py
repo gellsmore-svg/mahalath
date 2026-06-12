@@ -157,6 +157,7 @@ def _write_accepted(
         definitions=[
             DefinitionVersion(
                 text=result.final_definition,
+                language=entry_language,
                 model_used=_model_used_in(result),
                 decision_log_id=result.decision_log_id,
                 context_id=context_id,

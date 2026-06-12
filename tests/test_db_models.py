@@ -167,3 +167,20 @@ def test_backfill_language_stamps_legacy_records(mongo_db) -> None:
     assert backfill_language(mongo_db) == {
         "entries_stamped": 0, "documents_stamped": 0,
     }
+
+
+def test_insert_stamps_stem_hint_only_for_supported_languages(mongo_db) -> None:
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import OntologyEntryRepository
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(mpl_label="MPL-911", canonical_term="Gewebe",
+                              confidence=8.0, language="de"))
+    repo.insert(OntologyEntry(mpl_label="MPL-912", canonical_term="weave",
+                              confidence=8.0, language="en"))
+    repo.insert(OntologyEntry(mpl_label="MPL-913", canonical_term="样本",
+                              confidence=8.0, language="zh"))
+    assert mongo_db.ontology_entries.find_one({"_id": "MPL-911"})["text_language"] == "german"
+    # en uses the index default; zh has no stemmer — neither gets the field.
+    assert "text_language" not in mongo_db.ontology_entries.find_one({"_id": "MPL-912"})
+    assert "text_language" not in mongo_db.ontology_entries.find_one({"_id": "MPL-913"})

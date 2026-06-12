@@ -335,3 +335,19 @@ def test_run_hierarchy_review_handles_empty_ontology(mongo_db) -> None:
     # Prompt should indicate empty snapshot.
     prompt = adapter.calls[0]["prompt"]
     assert "(none" in prompt
+
+def test_snapshot_is_language_scoped(mongo_db) -> None:
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import OntologyEntryRepository
+    from mahalath.hierarchy import _snapshot
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(OntologyEntry(mpl_label="MPL-001", canonical_term="weave",
+                              confidence=8.0, language="en"))
+    repo.insert(OntologyEntry(mpl_label="MPL-002", canonical_term="Gewebe",
+                              confidence=8.0, language="de"))
+    repo.insert(OntologyEntry(mpl_label="MPL-003", canonical_term="Faser",
+                              confidence=8.0, language="de"))
+
+    labels = [e.mpl_label for e in _snapshot(repo, "MPL-003", limit=50)]
+    assert labels == ["MPL-002"]  # same-lexicon only, focus excluded

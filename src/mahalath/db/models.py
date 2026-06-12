@@ -25,6 +25,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = 1
 
+# Languages Mongo's text index can stem, code -> Mongo's name. Codes
+# outside this map (zh, ja, ko, ar, …) get no text_language hint — the
+# index defaults to english stemming for them, which is harmless
+# because token search is supplemented by the substring scorer and,
+# later, embeddings (ADR-030).
+MONGO_STEM_LANGUAGES = {
+    "da": "danish", "de": "german", "en": "english", "es": "spanish",
+    "fi": "finnish", "fr": "french", "hu": "hungarian", "it": "italian",
+    "nl": "dutch", "no": "norwegian", "pt": "portuguese",
+    "ro": "romanian", "ru": "russian", "sv": "swedish", "tr": "turkish",
+}
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)

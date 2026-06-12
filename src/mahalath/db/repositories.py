@@ -66,6 +66,13 @@ class OntologyEntryRepository:
     def insert(self, entry: OntologyEntry) -> OntologyEntry:
         payload = entry.model_dump()
         payload["_id"] = entry.mpl_label
+        # Stemming hint for the text index (decoupled override field,
+        # see db/indexes.py). Only set for languages Mongo can stem;
+        # everything else falls back to the index default silently.
+        from mahalath.db.models import MONGO_STEM_LANGUAGES
+        stem = MONGO_STEM_LANGUAGES.get(entry.language)
+        if stem is not None and stem != "english":
+            payload["text_language"] = stem
         self._col.insert_one(payload)
         return entry
 

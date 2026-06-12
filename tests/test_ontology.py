@@ -200,6 +200,11 @@ def test_entry_inherits_document_language(mongo_db) -> None:
     persisted = persist_debate_result(result, mongo_db, RuntimeConfig())
     entry = OntologyEntryRepository(mongo_db).get(persisted.mpl_label)
     assert entry.language == "de"
+    # The definition is expressed in the lexicon's language (Rule 1).
+    assert entry.definitions[0].language == "de"
+    # Mongo gets the German stemming hint via the decoupled override.
+    raw = mongo_db.ontology_entries.find_one({"_id": persisted.mpl_label})
+    assert raw["text_language"] == "german"
 
 
 def test_entry_defaults_to_english_without_document(mongo_db) -> None:
