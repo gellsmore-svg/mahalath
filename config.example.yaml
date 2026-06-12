@@ -26,19 +26,34 @@ runtime:
   # Multi-agent debate roles. Names per requirements §3.2 and DQ-001.
   # Moderator default off until first iteration cap is hit or first
   # contested split is detected. See DQ-001.
+  # Each role may pin its own model (DQ-010): putting the debaters on
+  # different model families makes min(pc, se) genuinely cross-model.
+  # model: null -> the role uses runtime.model.
   agents:
     precision_critic:
       enabled: true
       system_prompt_path: null   # uses built-in default when null
+      model: null                # e.g. mistral-small
     synthesis_explorer:
       enabled: true
       system_prompt_path: null
+      model: null
     moderator:
       enabled: false
       system_prompt_path: null
 
   # Debate loop controls. Defaults per ADR-009 (iteration cap) and
   # ADR-010 (confidence threshold).
+  # Consensus passes (hierarchy review + intent attribution) may
+  # rotate across a model roster: pass i runs on consensus_models[i %
+  # len]. Unanimity across model FAMILIES is much stronger evidence
+  # than one model agreeing with itself N times. null -> every pass on
+  # runtime.model.
+  # consensus_models:
+  #   - gemma4:e2b
+  #   - mistral-small
+  #   - qwen3.5:35b
+
   max_iterations_per_term: 50
   confidence_threshold: 8.0
   confidence_scale_max: 10.0

@@ -89,6 +89,7 @@ def run_hierarchy_review(
     source_decision_log_id: str | None = None,
     max_snapshot_entries: int = 50,
     style_overlay: str | None = None,
+    model_override: str | None = None,
 ) -> HierarchyReviewResult:
     entries = OntologyEntryRepository(db)
     focus = entries.get(focus_label)
@@ -103,7 +104,7 @@ def run_hierarchy_review(
     start = time.monotonic()
     try:
         response = adapter.generate(
-            prompt, want_json=True, model=runtime.model
+            prompt, want_json=True, model=model_override or runtime.model
         )
     except AdapterError as exc:
         raise HierarchyReviewError(
@@ -182,12 +183,16 @@ def run_hierarchy_review_consensus(
     review_ids: list[str] = []
     per_pass_actions: list[list[Action]] = []
     total_duration = 0
-    for _ in range(effective_passes):
+    roster = runtime.consensus_models or []
+    for pass_index in range(effective_passes):
         result = run_hierarchy_review(
             focus_label, db, adapter, runtime,
             triggered_by=triggered_by,
             source_decision_log_id=source_decision_log_id,
             style_overlay=style_overlay,
+            model_override=(
+                roster[pass_index % len(roster)] if roster else None
+            ),
         )
         review_ids.append(result.review_id)
         per_pass_actions.append(result.actions)

@@ -35,6 +35,10 @@ class PathConfig(BaseModel):
 class AgentRoleConfig(BaseModel):
     enabled: bool = True
     system_prompt_path: str | None = None
+    # Per-role model override (DQ-010, operator-ruled 2026-06-12):
+    # putting the two debaters on DIFFERENT model families makes
+    # min(pc, se) genuinely cross-model. None -> runtime.model.
+    model: str | None = None
 
 
 class AgentRolesConfig(BaseModel):
@@ -62,6 +66,12 @@ class RuntimeConfig(BaseModel):
     # stored intent_confidence is the minimum across passes. Set to 1 to
     # disable consensus (NOT recommended for model-sourced tags).
     intent_consensus_passes: int = 3
+    # Model roster for consensus passes (hierarchy review + intent
+    # attribution): pass i runs on consensus_models[i % len]. Unanimity
+    # across model FAMILIES is far stronger evidence than the same
+    # model agreeing with itself N times. None -> every pass on
+    # runtime.model (pre-S2.46 behaviour).
+    consensus_models: list[str] | None = None
     # Per-corpus style overlay: path (relative to project root) of a
     # Markdown file injected into every agent prompt as
     # `## Style guidance for this corpus`. Carries voice notes, domain

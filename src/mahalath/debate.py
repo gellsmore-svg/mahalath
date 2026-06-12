@@ -101,6 +101,11 @@ def run_debate(
     last_min_confidence: float | None = None
     last_context_name: str | None = None
 
+    # Per-role models (DQ-010): different families per debater when
+    # configured; falls back to the single runtime model.
+    pc_model = runtime.agents.precision_critic.model or runtime.model
+    se_model = runtime.agents.synthesis_explorer.model or runtime.model
+
     for iteration in range(1, runtime.max_iterations_per_term + 1):
         # PrecisionCritic
         pc_prompt = _build_critic_prompt(
@@ -112,7 +117,7 @@ def run_debate(
             adapter,
             role=PRECISION_CRITIC,
             iteration=iteration,
-            model=runtime.model,
+            model=pc_model,
             prompt=pc_prompt,
             decision_log_id=decision_log_id,
         )
@@ -123,7 +128,7 @@ def run_debate(
                 role=PRECISION_CRITIC,
                 content=_format_opinion_for_history(pc_opinion),
                 confidence=pc_opinion.confidence,
-                model=runtime.model,
+                model=pc_model,
             )
         )
 
@@ -137,7 +142,7 @@ def run_debate(
             adapter,
             role=SYNTHESIS_EXPLORER,
             iteration=iteration,
-            model=runtime.model,
+            model=se_model,
             prompt=se_prompt,
             decision_log_id=decision_log_id,
         )
@@ -148,7 +153,7 @@ def run_debate(
                 role=SYNTHESIS_EXPLORER,
                 content=_format_opinion_for_history(se_opinion),
                 confidence=se_opinion.confidence,
-                model=runtime.model,
+                model=se_model,
             )
         )
 

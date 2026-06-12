@@ -299,6 +299,7 @@ def attribute_intent(
     min_confidence: float = 8.0,
     apply: bool = False,
     style_overlay: str | None = None,
+    models: list[str] | None = None,
 ) -> IntentAttribution | None:
     """Run N independent attribution passes; store only on unanimity.
 
@@ -339,8 +340,12 @@ def attribute_intent(
 
     verdicts: list[IntentVerdict | None] = []
     per_pass: list[dict] = []
-    for _ in range(max(1, passes)):
-        response = adapter.generate(prompt, want_json=True)
+    roster = models or []
+    for pass_index in range(max(1, passes)):
+        response = adapter.generate(
+            prompt, want_json=True,
+            model=roster[pass_index % len(roster)] if roster else None,
+        )
         verdict = parse_intent_verdict(response.text)
         pass_detail: dict
         if verdict is None:
@@ -467,6 +472,7 @@ def backfill_intents(
     apply: bool = False,
     only_labels: set[str] | None = None,
     style_overlay: str | None = None,
+    models: list[str] | None = None,
 ) -> IntentBackfillResult:
     """Walk unattributed definitions; run the unanimity-gated attribution.
 
@@ -509,6 +515,7 @@ def backfill_intents(
                 min_confidence=min_confidence,
                 apply=apply,
                 style_overlay=style_overlay,
+                models=models,
             )
         except AdapterError as exc:
             result.errored += 1

@@ -1158,6 +1158,7 @@ def _run_pipeline_on_document(
             apply=True,
             only_labels=accepted_labels,
             style_overlay=style_overlay,
+            models=config.runtime.consensus_models,
         )
         intent_backfill = {
             "attempted": ib.attempted,
@@ -1603,6 +1604,7 @@ def _backfill_intents(
             min_confidence=config.runtime.confidence_threshold,
             apply=apply_flag,
             style_overlay=load_style_overlay(config),
+            models=config.runtime.consensus_models,
         )
         if apply_flag and result.stored > 0:
             # The glossary export carries intent fields (I-C); keep the

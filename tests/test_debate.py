@@ -195,3 +195,45 @@ def test_debate_each_iteration_sees_prior_history() -> None:
     assert "Iteration 1:" in pc2_prompt
     assert "precision_critic" in pc2_prompt
     assert "synthesis_explorer" in pc2_prompt
+
+
+# --- per-role models (DQ-010, S2.46) ------------------------------------------
+
+
+def test_debate_uses_per_role_models() -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import AgentRoleConfig, AgentRolesConfig, RuntimeConfig
+    from mahalath.debate import (
+        SPEAKER_TAG_PRECISION_CRITIC,
+        SPEAKER_TAG_SYNTHESIS_EXPLORER,
+        run_debate,
+    )
+
+    adapter = MockAdapter(
+        responses={
+            SPEAKER_TAG_PRECISION_CRITIC: json.dumps(
+                {"definition": "An agonist activates a receptor.",
+                 "critique": "ok", "confidence": 9.0}),
+            SPEAKER_TAG_SYNTHESIS_EXPLORER: json.dumps(
+                {"definition": "An agonist activates a receptor.",
+                 "rationale": "ok", "confidence": 8.5}),
+        },
+    )
+    runtime = RuntimeConfig(
+        model="family-b",
+        agents=AgentRolesConfig(
+            precision_critic=AgentRoleConfig(model="family-a"),
+        ),
+    )
+    result = run_debate(
+        term="agonist", context="activates a receptor",
+        source_document_id="doc-1", adapter=adapter, runtime=runtime,
+    )
+    assert result.outcome == "accepted"
+    models = [c["model"] for c in adapter.calls]
+    assert models[0] == "family-a"   # PrecisionCritic on its own family
+    assert models[1] == "family-b"   # SynthesisExplorer on the default
+    # The transcript records who said what on which model.
+    assert result.messages[0].model == "family-a"
+    assert result.messages[1].model == "family-b"

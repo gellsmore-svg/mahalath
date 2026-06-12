@@ -1210,6 +1210,7 @@ def redefine_pending_stale(
             apply=True,
             only_labels=redefined_labels,
             style_overlay=style_overlay,
+            models=config.runtime.consensus_models,
         )
         result.intent_backfill = {
             "attempted": ib.attempted,

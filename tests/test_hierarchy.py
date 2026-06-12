@@ -351,3 +351,27 @@ def test_snapshot_is_language_scoped(mongo_db) -> None:
 
     labels = [e.mpl_label for e in _snapshot(repo, "MPL-003", limit=50)]
     assert labels == ["MPL-002"]  # same-lexicon only, focus excluded
+
+
+def test_consensus_passes_rotate_model_roster(mongo_db) -> None:
+    import json
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import RuntimeConfig
+    from mahalath.db.models import OntologyEntry
+    from mahalath.db.repositories import OntologyEntryRepository
+    from mahalath.hierarchy import run_hierarchy_review_consensus
+
+    OntologyEntryRepository(mongo_db).insert(OntologyEntry(
+        mpl_label="MPL-001", canonical_term="alpha", confidence=8.0,
+    ))
+    adapter = MockAdapter(default_response=json.dumps(
+        {"actions": [], "no_actions_reason": "nothing to do"}))
+    runtime = RuntimeConfig(
+        consensus_models=["family-a", "family-b", "family-c"],
+    )
+    run_hierarchy_review_consensus(
+        "MPL-001", mongo_db, adapter, runtime, n_passes=3,
+    )
+    assert [c["model"] for c in adapter.calls] == [
+        "family-a", "family-b", "family-c",
+    ]

@@ -605,3 +605,28 @@ def test_confidence_exactly_one_not_rescaled(mongo_db) -> None:
     assert a.outcome == "below_threshold"
     assert a.intent_confidence == 1.0
     assert not any("confidence_rescaled_from" in p for p in a.per_pass)
+
+
+def test_attribution_passes_rotate_model_roster(mongo_db) -> None:
+    seed_intents(mongo_db)
+    _seed_entry(mongo_db)
+
+    class _ModelRecordingAdapter(_SeqAdapter):
+        def generate(self, prompt, *, model=None, timeout_seconds=None,
+                     want_json=False):
+            r = super().generate(prompt, model=model,
+                                 timeout_seconds=timeout_seconds,
+                                 want_json=want_json)
+            self.calls[-1] = {"prompt": prompt, "model": model}
+            return r
+
+    adapter = _ModelRecordingAdapter(
+        responses=[_verdict(["teach"], "high", 9.0)] * 3)
+    a = attribute_intent(
+        mongo_db, "MPL-001", 0, adapter, passes=3,
+        models=["family-a", "family-b", "family-c"],
+    )
+    assert a.outcome == "stored"
+    assert [c["model"] for c in adapter.calls] == [
+        "family-a", "family-b", "family-c",
+    ]
