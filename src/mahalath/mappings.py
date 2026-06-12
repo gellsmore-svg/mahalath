@@ -6,12 +6,17 @@ never a translation. The constitution mirrors intent attribution:
   - the relationship vocabulary is a governed taxonomy
     (`kind="mapping_relation"` rows, operator-owned);
   - N independent attribution passes (rotated across the
-    `consensus_models` roster — cross-FAMILY unanimity);
-  - the relationship type must be unanimous across passes, confidence
-    is min() across passes, promotion at the standard threshold;
-  - below threshold or non-unanimous → stored as `unresolved`
-    (Rule 6: store uncertainty); a unanimous "none" verdict → stored
-    as `rejected` so the pair is not re-proposed;
+    `consensus_models` roster — cross-FAMILY agreement);
+  - the MAJORITY verdict across passes decides (operator-ruled
+    2026-06-12, relaxed from strict unanimity after the first live
+    dry-run: the families kept agreeing a pair was related while
+    splitting partial_overlap vs narrower_than): a majority "none"
+    → `rejected`; a majority typed relationship is promoted at the
+    standard threshold with confidence = MEDIAN across the typed
+    votes (robust to one family's scale skew, the S2.42 pathology);
+  - below threshold or no majority → stored as `unresolved`
+    (Rule 6: store uncertainty); minority dissents are always kept
+    verbatim in `per_pass`;
   - alignment is NEVER performed at ingestion — generation runs as a
     background/REM-style job over already-settled lexicons.
 
@@ -30,8 +35,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from statistics import median
 from typing import Any
 
 from pymongo.database import Database
@@ -291,12 +298,14 @@ def attribute_mapping(
     models: list[str] | None = None,
     apply: bool = False,
 ) -> MappingAttribution | None:
-    """Run N attribution passes on one pair; gate on unanimity.
+    """Run N attribution passes on one pair; gate on majority.
 
-    Outcomes: unanimous typed relationship at/above threshold →
-    `accepted`; unanimous `none` → `rejected`; everything else →
-    `unresolved`. With `apply=True` the verdict (whatever its status)
-    is upserted into `mappings` with full per-pass audit.
+    Outcomes (operator-ruled 2026-06-12): strict-majority typed
+    relationship with median-across-typed-votes confidence at/above
+    threshold → `accepted`; strict-majority `none` → `rejected`;
+    no majority, a parse failure, or under threshold → `unresolved`.
+    With `apply=True` the verdict (whatever its status) is upserted
+    into `mappings` with full per-pass audit.
     """
     entries = OntologyEntryRepository(db)
     source = entries.get(source_label)
@@ -333,22 +342,31 @@ def attribute_mapping(
     )
     parsed = [v for v in verdicts if v is not None]
     if len(parsed) == len(verdicts) and parsed:
-        names = {v["relationship"] for v in parsed}
-        min_conf = min(v["confidence"] for v in parsed)
-        result.confidence = min_conf
+        result.confidence = min(v["confidence"] for v in parsed)
         result.rationale = parsed[-1]["rationale"]
-        if len(names) == 1:
-            name = names.pop()
+        tally = Counter(v["relationship"] for v in parsed)
+        name, votes = tally.most_common(1)[0]
+        if votes * 2 > len(parsed):  # strict majority decides
+            majority = [v for v in parsed if v["relationship"] == name]
+            result.rationale = majority[-1]["rationale"]
             if name == NO_RELATION:
                 result.relationship = NO_RELATION
+                result.confidence = median(
+                    v["confidence"] for v in majority)
                 result.status = "rejected"
-            elif name in valid_names and min_conf >= min_confidence:
-                result.relationship = valid_names[name].name
-                result.status = "accepted"
             elif name in valid_names:
+                # Median over ALL typed votes: a minority typed
+                # dissent still asserts relatedness, so its score
+                # counts; only "none" votes are excluded.
+                typed = [v for v in parsed
+                         if v["relationship"] != NO_RELATION]
+                conf = median(v["confidence"] for v in typed)
                 result.relationship = valid_names[name].name
-                result.status = "unresolved"  # unanimous but under threshold
-        # disagreement on type → unresolved with per-pass detail
+                result.confidence = conf
+                result.status = ("accepted" if conf >= min_confidence
+                                 else "unresolved")
+            # majority on an unknown name → unresolved (fail closed)
+        # no strict majority → unresolved with per-pass detail
 
     if apply:
         _store_attribution(db, source, target, result, relations)

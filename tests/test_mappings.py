@@ -1,10 +1,12 @@
 """Cross-language mapping machinery tests (M-C, ADR-029).
 
-Covers: relation-taxonomy seeding; the attribution gate (unanimous
-accepted / unanimous-none rejected / type-disagreement unresolved /
-under-threshold unresolved / roster rotation / scale correction);
-illocution comparison; generation dry-run vs apply incl. invented-
-label fail-closed and existing-pair skip; staleness participation.
+Covers: relation-taxonomy seeding; the majority attribution gate
+(operator-ruled 2026-06-12: majority verdict decides, confidence =
+median across typed votes — majority-type accepted / majority-none
+rejected / three-way-split unresolved / under-threshold unresolved /
+roster rotation / scale correction); illocution comparison;
+generation dry-run vs apply incl. invented-label fail-closed and
+existing-pair skip; staleness participation.
 """
 
 from __future__ import annotations
@@ -94,7 +96,7 @@ def test_unanimous_relationship_accepted_and_stored(mongo_db) -> None:
     )
     assert a.status == "accepted"
     assert a.relationship == "partial_overlap"
-    assert a.confidence == 8.2  # min across passes
+    assert a.confidence == 8.5  # median across typed passes
     assert [c["model"] for c in adapter.calls] == ["fam-a", "fam-b", "fam-c"]
 
     stored = MappingRepository(mongo_db).get_pair("MPL-117", "MPL-038")
@@ -114,13 +116,47 @@ def test_unanimous_none_is_rejected(mongo_db) -> None:
     assert a.relationship == "none"
 
 
-def test_type_disagreement_is_unresolved(mongo_db) -> None:
+def test_majority_type_accepted_over_dissenting_type(mongo_db) -> None:
+    # The live dry-run shape: 2x partial_overlap vs 1x narrower_than,
+    # with the majority's low scorer at 7.5 — median over the three
+    # typed votes (8.5) clears the bar where min() (7.5) would not.
+    seed_mapping_relations(mongo_db)
+    _seed_pair(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict("partial_overlap", 7.5),
+        _verdict("partial_overlap", 8.5),
+        _verdict("narrower_than", 8.5),
+    ])
+    a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter, passes=3)
+    assert a.status == "accepted"
+    assert a.relationship == "partial_overlap"
+    assert a.confidence == 8.5
+    assert len(a.per_pass) == 3  # the dissent stays on the record
+
+
+def test_majority_none_is_rejected(mongo_db) -> None:
+    # The scout-validates-its-own-candidates shape: one typed vote
+    # against two none-votes is rejected, not parked as unresolved.
+    seed_mapping_relations(mongo_db)
+    _seed_pair(mongo_db)
+    adapter = _SeqAdapter(responses=[
+        _verdict("partial_overlap", 7.0),
+        _verdict("none", 9.5),
+        _verdict("none", 9.0),
+    ])
+    a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter, passes=3)
+    assert a.status == "rejected"
+    assert a.relationship == "none"
+    assert a.confidence == 9.25  # median of the none votes
+
+
+def test_three_way_split_is_unresolved(mongo_db) -> None:
     seed_mapping_relations(mongo_db)
     _seed_pair(mongo_db)
     adapter = _SeqAdapter(responses=[
         _verdict("equivalent", 9.0),
         _verdict("partial_overlap", 9.0),
-        _verdict("equivalent", 9.0),
+        _verdict("narrower_than", 9.0),
     ])
     a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter, passes=3)
     assert a.status == "unresolved"
@@ -128,18 +164,18 @@ def test_type_disagreement_is_unresolved(mongo_db) -> None:
     assert len(a.per_pass) == 3  # disagreement detail kept for review
 
 
-def test_under_threshold_unanimity_is_unresolved(mongo_db) -> None:
+def test_under_threshold_majority_is_unresolved(mongo_db) -> None:
     seed_mapping_relations(mongo_db)
     _seed_pair(mongo_db)
     adapter = _SeqAdapter(responses=[
         _verdict("equivalent", 9.0),
-        _verdict("equivalent", 6.0),   # pessimist under 8.0
-        _verdict("equivalent", 9.0),
+        _verdict("equivalent", 6.0),
+        _verdict("equivalent", 7.5),   # median 7.5 under the 8.0 bar
     ])
     a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter, passes=3)
     assert a.status == "unresolved"
     assert a.relationship == "equivalent"
-    assert a.confidence == 6.0
+    assert a.confidence == 7.5
 
 
 def test_fractional_confidence_rescaled(mongo_db) -> None:
@@ -152,7 +188,7 @@ def test_fractional_confidence_rescaled(mongo_db) -> None:
     ])
     a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter, passes=3)
     assert a.status == "accepted"
-    assert a.confidence == 8.5
+    assert a.confidence == 9.0  # median(9.0, 8.5, 9.0)
 
 
 def test_illocution_comparison(mongo_db) -> None:
