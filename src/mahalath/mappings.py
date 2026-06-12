@@ -473,6 +473,11 @@ def generate_mappings(
                 build_candidate_prompt(source, target_docs), want_json=True,
             )
             candidates = _parse_candidates(response.text)
+            log.info(
+                "mappings: %s candidates for %s (%s): %s",
+                len(candidates), source_label, source.canonical_term,
+                candidates or "(none)",
+            )
         except AdapterError as exc:
             result.errored += 1
             result.errors.append(f"{source_label} candidates: {exc}")
@@ -501,6 +506,11 @@ def generate_mappings(
             if attribution is None:
                 continue
             result.attributions.append(attribution)
+            log.info(
+                "mappings: %s -> %s: %s (%s, conf %s)",
+                source_label, target_label, attribution.status,
+                attribution.relationship, attribution.confidence,
+            )
             if attribution.status == "accepted":
                 result.accepted += 1
             elif attribution.status == "rejected":
