@@ -22,6 +22,7 @@ without them.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import time
@@ -29,7 +30,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from mahalath.adapters.base import AdapterError, AdapterResponse, EmbeddingResponse
+from mahalath.adapters.base import (
+    AdapterError,
+    AdapterResponse,
+    EmbeddingNaNError,
+    EmbeddingResponse,
+)
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -165,11 +171,29 @@ class OllamaCliAdapter:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # HTTPError is reachable-but-errored (subclass of URLError, so
+            # caught first). bge-m3 emits NaN on some inputs, which Ollama
+            # then can't serialise → 500 "unsupported value: NaN".
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8")[:300]
+            except Exception:  # pragma: no cover
+                pass
+            if "NaN" in detail or "Inf" in detail:
+                raise EmbeddingNaNError(
+                    f"{model_name} produced a non-finite embedding for this "
+                    f"input (model numerical instability): {detail[:160]}"
+                ) from exc
+            raise AdapterError(
+                f"Ollama embed HTTP {exc.code} at {self.base_url}/api/embed: "
+                f"{detail}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise AdapterError(
-                f"Ollama embed unreachable at {self.base_url}/api/embed "
-                f"({exc}). Is the daemon reachable over HTTP from here, and "
-                f"is {model_name!r} pulled?"
+                f"Ollama embed could not connect to {self.base_url}/api/embed "
+                f"({exc.reason}). Is OLLAMA_HOST=0.0.0.0 set on the daemon and "
+                f"the host reachable from here?"
             ) from exc
         except (TimeoutError, OSError) as exc:
             raise AdapterError(
@@ -185,9 +209,14 @@ class OllamaCliAdapter:
                 f"Ollama embed returned no vector for {model_name}: "
                 f"{str(body)[:200]}"
             )
+        floats = [float(x) for x in vector]
+        if any(not math.isfinite(x) for x in floats):  # NaN/Inf via a 200
+            raise EmbeddingNaNError(
+                f"{model_name} returned a non-finite embedding value."
+            )
         return EmbeddingResponse(
-            vector=[float(x) for x in vector],
+            vector=floats,
             model=model_name,
-            dim=len(vector),
+            dim=len(floats),
             duration_ms=int((time.monotonic() - start) * 1000),
         )

@@ -22,6 +22,13 @@ class AdapterError(Exception):
     """
 
 
+class EmbeddingNaNError(AdapterError):
+    """The embedding model returned (or failed to encode) a non-finite
+    value — a numerical-instability quirk some models (e.g. bge-m3) hit
+    on particular inputs. Distinct from a connection failure so callers
+    can retry with different input or skip the entry, not abort."""
+
+
 @dataclass
 class AdapterResponse:
     text: str

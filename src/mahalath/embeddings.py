@@ -74,6 +74,13 @@ def embedding_source_text(entry) -> str:
     return f"{entry.canonical_term}: {latest}".strip()
 
 
+def embedding_fallback_text(entry) -> str:
+    """A second-choice input when the preferred one trips a model NaN:
+    the definition alone, without the term prefix. Empirically dodges
+    bge-m3's numerical-instability cases on some inputs (S2.51 live run)."""
+    return (entry.definitions[-1].text if entry.definitions else "").strip()
+
+
 def _source_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -124,7 +131,9 @@ def _is_current(record: dict[str, Any] | None, *, model: str, source_text: str) 
 class EmbeddingBackfillResult:
     scanned: int = 0
     embedded: int = 0
+    embedded_via_fallback: int = 0
     skipped_current: int = 0
+    skipped_nan: int = 0
     errored: int = 0
     model: str = ""
     errors: list[str] = field(default_factory=list)
@@ -133,7 +142,9 @@ class EmbeddingBackfillResult:
         return {
             "scanned": self.scanned,
             "embedded": self.embedded,
+            "embedded_via_fallback": self.embedded_via_fallback,
             "skipped_current": self.skipped_current,
+            "skipped_nan": self.skipped_nan,
             "errored": self.errored,
             "model": self.model,
             "errors": list(self.errors),
@@ -158,7 +169,7 @@ def backfill_embeddings(
     a re-debate (which changed the text) re-embeds only the changed
     entries.
     """
-    from mahalath.adapters.base import AdapterError
+    from mahalath.adapters.base import AdapterError, EmbeddingNaNError
 
     result = EmbeddingBackfillResult(model=model)
     query: dict[str, Any] = {} if language is None else {"language": language}
@@ -178,21 +189,46 @@ def backfill_embeddings(
         if not apply:
             result.embedded += 1  # would embed
             continue
+
+        # Primary input; on a model NaN, retry with the definition alone
+        # (dropping the term prefix dodges most of bge-m3's NaN cases),
+        # then give up gracefully so a model quirk on a few entries never
+        # blocks the rest.
+        used_text, resp, via_fallback = source_text, None, False
         try:
             resp = adapter.embed(source_text, model=model)
+        except EmbeddingNaNError:
+            fallback = embedding_fallback_text(entry)
+            if fallback and fallback != source_text:
+                try:
+                    resp = adapter.embed(fallback, model=model)
+                    used_text, via_fallback = fallback, True
+                except EmbeddingNaNError:
+                    resp = None
+            if resp is None:
+                result.skipped_nan += 1
+                result.errors.append(
+                    f"{entry.mpl_label}: non-finite embedding on every input "
+                    f"variant (model quirk) — skipped"
+                )
+                continue
         except AdapterError as exc:
             result.errored += 1
             result.errors.append(f"{entry.mpl_label}: {exc}")
             continue
+
         store_embedding(
             db, entry.mpl_label,
             language=entry.language, model=resp.model,
-            vector=resp.vector, source_text=source_text,
+            vector=resp.vector, source_text=used_text,
         )
         result.embedded += 1
+        if via_fallback:
+            result.embedded_via_fallback += 1
         log.info(
-            "embeddings: %s (%s) embedded dim=%s via %s",
+            "embeddings: %s (%s) embedded dim=%s via %s%s",
             entry.mpl_label, entry.language, resp.dim, resp.model,
+            " [fallback: def-only]" if via_fallback else "",
         )
     return result
 

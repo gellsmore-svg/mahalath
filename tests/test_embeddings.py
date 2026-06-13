@@ -141,6 +141,37 @@ def test_generate_mappings_uses_embedding_shortlist(mongo_db) -> None:
                for c in adapter.calls)
 
 
+def test_backfill_falls_back_then_skips_on_nan(mongo_db) -> None:
+    """A model NaN on the term+def input retries with def-only; if that
+    also NaNs, the entry is skipped (not crashed)."""
+    from mahalath.adapters.base import EmbeddingNaNError
+
+    repo = OntologyEntryRepository(mongo_db)
+    repo.insert(_entry("MPL-201", "alpha", "Definition of alpha.", "en"))   # fallback works
+    repo.insert(_entry("MPL-202", "beta", "Definition of beta.", "en"))     # always NaN
+
+    class NaNAdapter:
+        name = "nan"
+        default_model = "bge-m3"
+
+        def generate(self, *a, **k):  # pragma: no cover
+            raise NotImplementedError
+
+        def embed(self, text, *, model=None, timeout_seconds=None):
+            # term-prefixed input always NaNs; def-only works for alpha,
+            # but beta NaNs on every variant.
+            if text.startswith("alpha:") or "beta" in text:
+                raise EmbeddingNaNError("non-finite")
+            from mahalath.adapters.base import EmbeddingResponse
+            return EmbeddingResponse(vector=[0.1, 0.2], model="bge-m3", dim=2)
+
+    res = backfill_embeddings(mongo_db, NaNAdapter(), model="bge-m3", apply=True)
+    assert res.embedded == 1 and res.embedded_via_fallback == 1   # alpha, via def-only
+    assert res.skipped_nan == 1                                    # beta, unembeddable
+    assert get_embedding(mongo_db, "MPL-201") is not None
+    assert get_embedding(mongo_db, "MPL-202") is None
+
+
 def test_init_bootstrap_is_idempotent(mongo_db) -> None:
     """`init` creates collections+indexes and seeds the taxonomies; a
     second run is a clean no-op (fresh-install bootstrap, v1)."""
