@@ -53,6 +53,13 @@ def main(argv: list[str] | None = None) -> int:
 
     subcommands.add_parser("db-ping", help="Ping the configured MongoDB instance.")
     subcommands.add_parser("show-config", help="Print the loaded configuration as JSON.")
+    init_parser = subcommands.add_parser(
+        "init",
+        help="Prepare a fresh database: create all collections + indexes "
+        "and seed the standard taxonomies (intents, mapping relations). "
+        "Idempotent — safe to re-run. Dry-run reports without writing.",
+    )
+    init_parser.add_argument("--dry-run", action="store_true")
 
     ingest_one = subcommands.add_parser(
         "ingest-one", help="(Stage 1) Ingest a single document by path."
@@ -389,8 +396,40 @@ def main(argv: list[str] | None = None) -> int:
     genmap_parser.add_argument("--passes", type=int, default=None)
     genmap_parser.add_argument("--apply", action="store_true")
     genmap_parser.add_argument(
+        "--candidate-source", default=None,
+        choices=["auto", "embedding", "prompt"],
+        help="How to shortlist target candidates (default: config "
+        "mapping_candidate_source). 'embedding' uses meaning-fingerprints "
+        "(needs backfill-embeddings first); 'prompt' uses the old "
+        "model-picks-from-a-snapshot stage.",
+    )
+    genmap_parser.add_argument(
+        "--top-k", type=int, default=None,
+        help="Candidates per source entry handed to the gate "
+        "(default: config mapping_candidate_top_k).",
+    )
+    genmap_parser.add_argument(
         "--adapter", default=None,
         help="Adapter name (default: runtime.model_adapter).",
+    )
+
+    embed_parser = subcommands.add_parser(
+        "backfill-embeddings",
+        help="Compute and store meaning-fingerprints for entries (for "
+        "cross-language candidate shortlisting). Dry-run by default; "
+        "--apply writes. Re-embeds only entries whose definition or model "
+        "changed unless --recompute-all.",
+    )
+    embed_parser.add_argument("--language", default=None,
+                              help="Limit to one lexicon (default: all).")
+    embed_parser.add_argument("--model", default=None,
+                              help="Embedding model (default: runtime.embedding_model).")
+    embed_parser.add_argument("--apply", action="store_true")
+    embed_parser.add_argument("--recompute-all", action="store_true")
+    embed_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter for embeddings (default: runtime.embedding_adapter "
+        "or runtime.model_adapter).",
     )
 
     listmap_parser = subcommands.add_parser(
@@ -604,6 +643,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "db-ping":
         return _db_ping(config)
 
+    if args.command == "init":
+        return _init(config, dry_run=args.dry_run)
+
     if args.command == "ingest-one":
         return _ingest_one(
             config, Path(args.path), style_overlay_path=args.style_overlay,
@@ -750,6 +792,18 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             passes=args.passes,
             apply_flag=args.apply,
+            adapter_name=args.adapter,
+            candidate_source=args.candidate_source,
+            top_k=args.top_k,
+        )
+
+    if args.command == "backfill-embeddings":
+        return _backfill_embeddings(
+            config,
+            language=args.language,
+            model=args.model,
+            apply_flag=args.apply,
+            recompute_all=args.recompute_all,
             adapter_name=args.adapter,
         )
 
@@ -1935,6 +1989,8 @@ def _generate_mappings(
     passes: int | None,
     apply_flag: bool,
     adapter_name: str | None,
+    candidate_source: str | None = None,
+    top_k: int | None = None,
 ) -> int:
     import logging as _logging
     from mahalath.adapters import make_adapter
@@ -1963,12 +2019,64 @@ def _generate_mappings(
             max_items=max_items,
             passes=passes,
             apply=apply_flag,
+            candidate_source=candidate_source,
+            top_k=top_k,
         )
         print(json.dumps({
             "ok": True,
             "applied": apply_flag,
             "source_language": source_language,
             "target_language": target_language,
+            "candidate_source": candidate_source or config.runtime.mapping_candidate_source,
+            **result.to_dict(),
+        }, indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _backfill_embeddings(
+    config: AppConfig,
+    *,
+    language: str | None,
+    model: str | None,
+    apply_flag: bool,
+    recompute_all: bool,
+    adapter_name: str | None,
+) -> int:
+    import logging as _logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.embeddings import backfill_embeddings
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    effective_adapter = (
+        adapter_name or config.runtime.embedding_adapter
+        or config.runtime.model_adapter
+    )
+    effective_model = model or config.runtime.embedding_model
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+        result = backfill_embeddings(
+            db, adapter,
+            model=effective_model,
+            language=language,
+            apply=apply_flag,
+            recompute_all=recompute_all,
+        )
+        print(json.dumps({
+            "ok": True, "applied": apply_flag, "language": language or "(all)",
             **result.to_dict(),
         }, indent=2, default=str))
         return 0
@@ -2533,6 +2641,44 @@ def _list_ontology(config: AppConfig) -> int:
 
 def _config_as_dict(config: AppConfig) -> dict[str, Any]:
     return json.loads(config.model_dump_json())
+
+
+def _init(config: AppConfig, *, dry_run: bool) -> int:
+    """Fresh-install bootstrap: collections + indexes + standard taxonomies.
+
+    Indexes are created unconditionally (idempotent, and a dry run still
+    needs them to seed against); the taxonomy seeders honour dry_run so
+    `--dry-run` reports what WOULD be seeded without writing rows.
+    """
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.intents import seed_intents
+    from mahalath.mappings import seed_mapping_relations
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+    try:
+        indexes = ensure_indexes(db)
+        intents = seed_intents(db, dry_run=dry_run)
+        relations = seed_mapping_relations(db, dry_run=dry_run)
+        print(json.dumps({
+            "ok": True,
+            "dry_run": dry_run,
+            "database": config.mongo.database,
+            "collections_indexed": sorted(indexes.keys()),
+            "intents": {"inserted": intents.inserted,
+                        "skipped_existing": intents.skipped_existing,
+                        "name_conflicts": intents.name_conflicts},
+            "mapping_relations": relations,
+        }, indent=2, default=str))
+        if dry_run:
+            print("\n(dry run — indexes ensured, taxonomies NOT written; "
+                  "re-run without --dry-run to seed)", file=sys.stderr)
+        return 0
+    finally:
+        close_all()
 
 
 def _db_ping(config: AppConfig) -> int:

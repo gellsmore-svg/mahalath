@@ -124,8 +124,16 @@ spelling out.
 - **Shortlist** ⚙︎ (the code calls it **candidate scouting**) — the first
   step of making mappings: out of all entries in the other language, pick
   the few worth comparing to a given entry, so the expensive judging runs
-  on a handful of pairs, not all of them. *This is the step with the
-  recall problem* — it keeps missing obvious matches.
+  on a handful of pairs, not all of them. As of S2.51 this can be done by
+  **meaning-closeness** (fingerprints) instead of a model picking from a
+  list — the fix for the recall problem (it used to miss obvious matches).
+- **Backfill embeddings** — the one-off step that computes and stores a
+  fingerprint for every entry, so the shortlist has something to compare.
+  Only this step calls the embedding model; making mappings afterwards
+  just reads the stored numbers. Command: `backfill-embeddings`.
+- **init / bootstrap** — `mahalath init` prepares a fresh database:
+  creates every collection and index and seeds the standard taxonomies
+  (intents, mapping relationships). Idempotent — safe to re-run.
 - **Judging step** ⚙︎ (the code calls it **the gate**) — the second step:
   the models judge each shortlisted pair and the *majority verdict*
   decides accepted / rejected / unresolved.

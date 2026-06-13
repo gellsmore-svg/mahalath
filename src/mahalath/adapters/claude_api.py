@@ -112,3 +112,13 @@ class ClaudeApiAdapter:
                 "stop_reason": data.get("stop_reason"),
             },
         )
+
+    def embed(self, text, *, model=None, timeout_seconds=None):
+        # The Anthropic API has no embedding endpoint; embeddings are a
+        # local-adapter concern (ADR-031 keeps the meaning-fingerprint
+        # work Mahalath-local). Anthropic recommends Voyage for embeddings,
+        # but wiring a paid external service is out of scope here.
+        raise AdapterError(
+            "claude_api has no embedding model; use a local embedding "
+            "adapter (e.g. ollama_cli with bge-m3) for fingerprinting."
+        )

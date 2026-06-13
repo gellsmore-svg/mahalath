@@ -66,6 +66,17 @@ runtime:
   # which takes minutes on laptop hardware.
   ollama_timeout_seconds: 600
 
+  # Cross-language candidate shortlisting (M-C). The embedding model
+  # turns a definition's meaning into a vector so candidate pairs are
+  # found by meaning-closeness instead of a model eyeballing a list.
+  # MUST be multilingual (bge-m3 covers 100+ languages incl. CJK).
+  # Run `mahalath backfill-embeddings --apply` once it's pulled, then
+  # `generate-mappings --candidate-source embedding`.
+  embedding_model: bge-m3
+  # embedding_adapter: null        # null -> use model_adapter
+  mapping_candidate_source: auto   # auto | embedding | prompt
+  mapping_candidate_top_k: 5
+
 ingestion:
   # APScheduler-style polling cadence for the watched input folder.
   poll_interval_seconds: 60

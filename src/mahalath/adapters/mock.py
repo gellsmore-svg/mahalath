@@ -11,10 +11,12 @@ sequence and content of adapter calls.
 
 from __future__ import annotations
 
+import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from mahalath.adapters.base import AdapterResponse
+from mahalath.adapters.base import AdapterResponse, EmbeddingResponse
 
 
 @dataclass
@@ -23,6 +25,11 @@ class MockAdapter:
     default_response: str = "ok"
     responses: dict[str, str] = field(default_factory=dict)
     default_model: str = "mock-model"
+    # text-substring -> vector, same first-match-wins idiom as `responses`.
+    # Unmatched text gets a deterministic hash-derived unit vector, so the
+    # mock is stable across runs without a real embedding model.
+    embeddings: dict[str, list[float]] = field(default_factory=dict)
+    embedding_dim: int = 8
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     def generate(
@@ -51,3 +58,30 @@ class MockAdapter:
             model=model or self.default_model,
             duration_ms=0,
         )
+
+    def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> EmbeddingResponse:
+        self.calls.append({"embed": text, "model": model})
+        for needle, vector in self.embeddings.items():
+            if needle in text:
+                return EmbeddingResponse(
+                    vector=list(vector), model=model or self.default_model,
+                    dim=len(vector),
+                )
+        vector = self._hash_vector(text)
+        return EmbeddingResponse(
+            vector=vector, model=model or self.default_model, dim=len(vector),
+        )
+
+    def _hash_vector(self, text: str) -> list[float]:
+        """A stable pseudo-embedding: hash bytes → floats → unit length.
+        Deterministic per text; not semantic, but enough for wiring tests."""
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        raw = [digest[i % len(digest)] - 127.5 for i in range(self.embedding_dim)]
+        norm = math.sqrt(sum(x * x for x in raw)) or 1.0
+        return [x / norm for x in raw]

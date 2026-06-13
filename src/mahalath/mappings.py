@@ -519,20 +519,35 @@ def generate_mappings(
     passes: int | None = None,
     apply: bool = False,
     max_target_snapshot: int = 60,
+    candidate_source: str | None = None,
+    top_k: int | None = None,
 ) -> MappingGenerationResult:
-    """Candidate scouting + gated attribution over one language pair.
+    """Candidate shortlisting + gated attribution over one language pair.
 
     Dry-run by default (the I-D pattern): the result carries every
     attribution for operator review; `apply=True` upserts them.
     Pairs that already hold a mapping are skipped (re-audit is the
     staleness path's job, not generation's).
+
+    The shortlist (which target entries to compare against each source)
+    comes from one of two stages, per `candidate_source`:
+      - "embedding": meaning-closeness over backfilled fingerprints
+        (`embeddings.shortlist_candidates`); finds matches by meaning,
+        across the whole target lexicon.
+      - "prompt": a fast model picks from a snapshot of the target
+        lexicon (pre-fingerprint behaviour); capped at `max_target_snapshot`.
+      - "auto" (default): embedding when the source has a fingerprint and
+        the target language has any, else prompt.
     """
     from mahalath.adapters.base import AdapterError
+    from mahalath.embeddings import get_embedding, shortlist_candidates
 
     entries = OntologyEntryRepository(db)
     mappings = MappingRepository(db)
     effective_passes = passes or config.runtime.intent_consensus_passes
     roster = config.runtime.consensus_models
+    source_mode = candidate_source or config.runtime.mapping_candidate_source
+    k = top_k or config.runtime.mapping_candidate_top_k
 
     target_docs = [
         OntologyEntryRepository(db).get(doc["_id"])
@@ -546,6 +561,19 @@ def generate_mappings(
         return result
     target_labels = {t.mpl_label for t in target_docs}
 
+    def _use_embedding(source_label: str) -> bool:
+        if source_mode == "prompt":
+            return False
+        if source_mode == "embedding":
+            return True
+        # auto: embeddings when this source has a fingerprint and the
+        # target language has at least one to compare against.
+        if get_embedding(db, source_label) is None:
+            return False
+        return db.entry_embeddings.count_documents(
+            {"language": target_language}, limit=1
+        ) > 0
+
     source_labels = [
         doc["_id"]
         for doc in db.ontology_entries.find(
@@ -558,24 +586,38 @@ def generate_mappings(
         if source is None:
             continue
         result.source_entries_scanned += 1
-        try:
-            response = adapter.generate(
-                build_candidate_prompt(source, target_docs), want_json=True,
-            )
-            candidates = _parse_candidates(response.text)
-            log.info(
-                "mappings: %s candidates for %s (%s): %s",
-                len(candidates), source_label, source.canonical_term,
-                candidates or "(none)",
-            )
-        except AdapterError as exc:
-            result.errored += 1
-            result.errors.append(f"{source_label} candidates: {exc}")
-            continue
 
-        for target_label in candidates[:3]:
-            if target_label not in target_labels:
-                continue  # invented label — fail closed
+        if _use_embedding(source_label):
+            candidate_labels = [
+                c.label for c in shortlist_candidates(
+                    db, source_label, target_language, top_k=k
+                )
+            ]
+            log.info(
+                "mappings: %s embedding-candidates for %s (%s): %s",
+                len(candidate_labels), source_label, source.canonical_term,
+                candidate_labels or "(none)",
+            )
+        else:
+            try:
+                response = adapter.generate(
+                    build_candidate_prompt(source, target_docs), want_json=True,
+                )
+                parsed = _parse_candidates(response.text)
+                # prompt models can invent labels → keep only real ones
+                # from the snapshot they were shown.
+                candidate_labels = [c for c in parsed[:k] if c in target_labels]
+                log.info(
+                    "mappings: %s prompt-candidates for %s (%s): %s",
+                    len(candidate_labels), source_label, source.canonical_term,
+                    candidate_labels or "(none)",
+                )
+            except AdapterError as exc:
+                result.errored += 1
+                result.errors.append(f"{source_label} candidates: {exc}")
+                continue
+
+        for target_label in candidate_labels:
             if mappings.get_pair(source_label, target_label) is not None:
                 continue
             result.candidate_pairs += 1

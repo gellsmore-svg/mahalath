@@ -21,12 +21,15 @@ without them.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from mahalath.adapters.base import AdapterError, AdapterResponse
+from mahalath.adapters.base import AdapterError, AdapterResponse, EmbeddingResponse
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
@@ -49,12 +52,16 @@ class OllamaCliAdapter:
         *,
         default_model: str = "gemma4:e2b",
         default_timeout_seconds: int = 180,
+        base_url: str = "http://localhost:11434",
+        embedding_model: str = "bge-m3",
     ) -> None:
         if not Path(executable).exists():
             raise AdapterError(f"Ollama executable not found: {executable}")
         self.executable = Path(executable)
         self.default_model = default_model
         self.default_timeout_seconds = default_timeout_seconds
+        self.base_url = base_url.rstrip("/")
+        self.embedding_model = embedding_model
 
     def generate(
         self,
@@ -127,3 +134,60 @@ class OllamaCliAdapter:
         if want_json:
             cmd.extend(["--format", "json"])
         return cmd
+
+    def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> EmbeddingResponse:
+        """Embed via Ollama's HTTP `/api/embed` endpoint.
+
+        Generation shells out to the CLI (the Windows daemon is awkward
+        to reach over HTTP from WSL), but the CLI has no stable
+        embedding output contract across versions, whereas `/api/embed`
+        does: POST {"model", "input"} -> {"embeddings": [[...]]}. If the
+        daemon isn't reachable over HTTP from here, this raises a clear
+        AdapterError and the caller can fall back to prompt-based
+        candidate selection.
+        """
+        model_name = model or self.embedding_model
+        timeout = timeout_seconds or self.default_timeout_seconds
+        payload = json.dumps({"model": model_name, "input": text}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        start = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise AdapterError(
+                f"Ollama embed unreachable at {self.base_url}/api/embed "
+                f"({exc}). Is the daemon reachable over HTTP from here, and "
+                f"is {model_name!r} pulled?"
+            ) from exc
+        except (TimeoutError, OSError) as exc:
+            raise AdapterError(
+                f"Ollama embed failed for {model_name}: {exc}"
+            ) from exc
+
+        # /api/embed returns {"embeddings": [[...]]}; the older
+        # /api/embeddings returned {"embedding": [...]}. Accept both.
+        vectors = body.get("embeddings")
+        vector = vectors[0] if vectors else body.get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise AdapterError(
+                f"Ollama embed returned no vector for {model_name}: "
+                f"{str(body)[:200]}"
+            )
+        return EmbeddingResponse(
+            vector=[float(x) for x in vector],
+            model=model_name,
+            dim=len(vector),
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )

@@ -30,6 +30,19 @@ class AdapterResponse:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class EmbeddingResponse:
+    """A single text's embedding: a fixed-length list of numbers whose
+    closeness to another text's list reflects how related the meanings
+    are. `dim` is len(vector), recorded so vectors from different
+    models/sizes are never compared by accident."""
+
+    vector: list[float]
+    model: str
+    dim: int
+    duration_ms: int = 0
+
+
 @runtime_checkable
 class Adapter(Protocol):
     """Generation adapter.
@@ -48,3 +61,14 @@ class Adapter(Protocol):
         timeout_seconds: int | None = None,
         want_json: bool = False,
     ) -> AdapterResponse: ...
+
+    def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> EmbeddingResponse:
+        """Return the embedding for `text`. Adapters without an embedding
+        model raise AdapterError."""
+        ...

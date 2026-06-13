@@ -16,6 +16,8 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
             executable=config.runtime.ollama_executable,
             default_model=config.runtime.model,
             default_timeout_seconds=config.runtime.ollama_timeout_seconds,
+            base_url=config.runtime.ollama_base_url,
+            embedding_model=config.runtime.embedding_model,
         )
     if name == "claude_api":
         from mahalath.adapters.claude_api import ClaudeApiAdapter

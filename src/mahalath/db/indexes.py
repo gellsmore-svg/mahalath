@@ -143,4 +143,14 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.definition_contexts.create_index([("created_at", DESCENDING)]),
     ]
 
+    # Meaning-fingerprints for cross-language candidate shortlisting
+    # (M-C). `_id` IS the entry's MPL label (one current vector per
+    # entry), kept in its own collection so big vectors don't bloat every
+    # ontology_entries read. Shortlisting scans by language.
+    created["entry_embeddings"] = [
+        db.entry_embeddings.create_index("language"),
+        db.entry_embeddings.create_index("model"),
+        db.entry_embeddings.create_index([("computed_at", DESCENDING)]),
+    ]
+
     return created

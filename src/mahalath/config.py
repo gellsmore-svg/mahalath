@@ -92,6 +92,22 @@ class RuntimeConfig(BaseModel):
     # model from disk, which takes minutes on laptop hardware (operator
     # direction 2026-06-11: "wait longer for llm calls"). Raised 180→600.
     ollama_timeout_seconds: int = 600
+    # Cross-language candidate fingerprinting (M-C, ADR-031-adjacent).
+    # The embedding model turns a definition's meaning into a vector so
+    # candidate pairs are found by meaning-closeness instead of a model
+    # eyeballing a list. MUST be multilingual (de↔en) — bge-m3 covers
+    # 100+ languages incl. CJK. Lives behind the adapter's embed().
+    embedding_model: str = "bge-m3"
+    # None -> use model_adapter for embeddings too.
+    embedding_adapter: str | None = None
+    # generate-mappings candidate stage: "embedding" (meaning-closeness,
+    # needs backfilled vectors), "prompt" (the model picks from a
+    # snapshot — pre-fingerprint behaviour), or "auto" (embedding when
+    # both languages have vectors, else prompt).
+    mapping_candidate_source: str = "auto"
+    # How many nearest candidates the embedding shortlist hands to the
+    # attribution gate per source entry.
+    mapping_candidate_top_k: int = 5
 
 
 class IngestionConfig(BaseModel):
