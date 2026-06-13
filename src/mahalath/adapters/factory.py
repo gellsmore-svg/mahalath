@@ -68,6 +68,21 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
     if name == "claude_api":
         from mahalath.adapters.claude_api import ClaudeApiAdapter
         return ClaudeApiAdapter()
+    if name == "hoglah":
+        from mahalath.adapters.hoglah import HoglahAdapter
+
+        h = config.runtime.hoglah
+        return HoglahAdapter(
+            db_path=h.db_path,
+            output_dir=h.output_dir,
+            default_model=config.runtime.model,
+            embedding_model=config.runtime.embedding_model,
+            default_timeout_seconds=config.runtime.ollama_timeout_seconds,
+            poll_interval_seconds=h.poll_interval_seconds,
+            delivery=h.delivery,
+            callback_host=h.callback_host,
+            callback_port=h.callback_port,
+        )
     raise AdapterError(
-        f"Unknown adapter {name!r}. Supported: mock, ollama_cli, claude_api."
+        f"Unknown adapter {name!r}. Supported: mock, ollama_cli, claude_api, hoglah."
     )

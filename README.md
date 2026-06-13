@@ -195,11 +195,39 @@ src/mahalath/
 ├── style.py             per-corpus voice overlay loader
 ├── cli.py               argparse entry point
 ├── db/                  MongoDB layer (client, indexes, models, repositories)
-├── adapters/            Adapter protocol + MockAdapter + OllamaCliAdapter + ClaudeApiAdapter
+├── adapters/            Adapter protocol + MockAdapter + OllamaCliAdapter + ClaudeApiAdapter + HoglahAdapter
 └── web/                 FastAPI dashboard + JSON API (chat / retrieve / propose_term)
 ```
 
 Nine MongoDB collections: `documents`, `ontology_entries` (`_id` = MPL label), `ontology_tree`, `decision_log`, `agent_exchanges`, `undecided_queue`, `action_proposals`, `ontology_reviews`, `definition_contexts` (frames + intent tags).
+
+## Routing via Hoglah (queue daemon)
+
+By default Mahalath calls Ollama directly (`model_adapter: ollama_cli`). For a
+walk-away run you can instead route **both generation and embeddings** through
+[Hoglah](https://github.com/gellsmore-svg/hoglah), a local-first job queue, so
+every model call is serialized through one durable queue (handy on a single
+constrained GPU) and survives restarts.
+
+```bash
+pip install 'mahalath[hoglah]'
+```
+
+Set the adapter(s) to `hoglah` in `config.yaml` and configure the
+`runtime.hoglah` block (see `config.example.yaml`). Then run a **separate**
+Hoglah worker daemon pointed at the same queue + output folder:
+
+```bash
+HOGLAH_OUTPUT_DIR=~/.hoglah/outbox hoglah run --real   # executes jobs vs Ollama
+```
+
+Mahalath becomes a pure submitter: it enqueues each call and gets the result
+back either by polling the output folder (`delivery: poll`) or via an HTTP
+callback to a tiny receiver it runs (`delivery: callback`, with poll as
+fallback). Mahalath owns the callback URL and sends it to Hoglah per job —
+nothing about Mahalath is baked into Hoglah, so the same mechanism works for
+any caller. Embedding/fingerprinting routes through Hoglah's embedding jobs
+(`bge-m3`).
 
 ## Design commitments
 

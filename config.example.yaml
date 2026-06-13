@@ -82,6 +82,30 @@ runtime:
   mapping_candidate_source: auto   # auto | embedding | prompt
   mapping_candidate_top_k: 5
 
+  # Route LLM calls (generation AND embeddings/fingerprinting) through a
+  # Hoglah queue daemon instead of calling Ollama directly. Set
+  # model_adapter / embedding_adapter / chat_adapter to "hoglah" to use it,
+  # and install the extra:  pip install 'mahalath[hoglah]'.
+  #
+  # Topology: a SEPARATE `hoglah run` worker daemon executes jobs off the
+  # shared SQLite queue (db_path) and writes results to output_dir. Mahalath
+  # is a pure submitter — it enqueues, then either polls output_dir or gets an
+  # HTTP callback. Point the daemon at the SAME db_path and output_dir, e.g.:
+  #   HOGLAH_OUTPUT_DIR=~/.hoglah/outbox hoglah run --real
+  hoglah:
+    db_path: ~/.hoglah/hoglah.db
+    output_dir: ~/.hoglah/outbox
+    # How results come back: "poll" the output folder, or "callback" (Mahalath
+    # runs a tiny HTTP receiver and Hoglah POSTs the result to it; falls back
+    # to the output folder if a push is missed).
+    delivery: callback
+    poll_interval_seconds: 0.5
+    # Callback receiver bind/advertise host + port (delivery: callback).
+    # Both processes are local, so 127.0.0.1 works. port 0 = OS picks a free
+    # port. Hoglah is given this URL per job; nothing is hardcoded on its side.
+    callback_host: 127.0.0.1
+    callback_port: 0
+
 ingestion:
   # APScheduler-style polling cadence for the watched input folder.
   poll_interval_seconds: 60

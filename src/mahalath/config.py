@@ -108,6 +108,34 @@ class RuntimeConfig(BaseModel):
     # How many nearest candidates the embedding shortlist hands to the
     # attribution gate per source entry.
     mapping_candidate_top_k: int = 5
+    # Settings for the "hoglah" adapter (model_adapter / embedding_adapter /
+    # chat_adapter = "hoglah"): route calls through a Hoglah queue daemon
+    # rather than calling Ollama directly. Unused by the other adapters.
+    hoglah: HoglahRoutingConfig = Field(default_factory=lambda: HoglahRoutingConfig())
+
+
+class HoglahRoutingConfig(BaseModel):
+    """Settings for routing LLM calls through a Hoglah queue daemon instead of
+    calling Ollama directly (model_adapter / embedding_adapter = "hoglah").
+
+    Topology: a SEPARATE `hoglah run` worker daemon executes jobs off the
+    shared SQLite queue (`db_path`) and writes each result to `output_dir`.
+    Mahalath is a pure submitter — it enqueues a job, gets a job id, and either
+    polls `output_dir/<job_id>.json` (delivery="poll") or receives an HTTP
+    callback (delivery="callback", see M2). Both `db_path` and `output_dir`
+    must match the daemon's own config.
+    """
+
+    db_path: str = "~/.hoglah/hoglah.db"
+    output_dir: str = "~/.hoglah/outbox"
+    # How a submitted job's result comes back: "poll" the output folder, or
+    # "callback" (Mahalath runs a tiny receiver and Hoglah POSTs to it).
+    delivery: str = "poll"
+    # Poll cadence for the output folder (delivery="poll").
+    poll_interval_seconds: float = 0.5
+    # Callback receiver (delivery="callback"); 0 = pick an ephemeral port.
+    callback_host: str = "127.0.0.1"
+    callback_port: int = 0
 
 
 class IngestionConfig(BaseModel):
