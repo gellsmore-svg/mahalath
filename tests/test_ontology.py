@@ -9,7 +9,12 @@ labelling within a parent, accepted vs undecided routing, decision log
 from __future__ import annotations
 
 from mahalath.config import RuntimeConfig
-from mahalath.db.models import AgentExchange, DebateMessage, DefinitionVersion
+from mahalath.db.models import (
+    AgentExchange,
+    DebateMessage,
+    DefinitionVersion,
+    OntologyEntry,
+)
 from mahalath.db.repositories import (
     AgentExchangeRepository,
     DecisionLogRepository,
@@ -214,3 +219,63 @@ def test_entry_defaults_to_english_without_document(mongo_db) -> None:
     )
     entry = OntologyEntryRepository(mongo_db).get(persisted.mpl_label)
     assert entry.language == "en"
+
+
+def test_redebate_entry_dry_run_then_apply(mongo_db) -> None:
+    """redebate_entry refreshes an existing entry: dry run writes nothing;
+    apply appends a new definition, preserves history, advances confidence."""
+    import json as _json
+
+    from mahalath.adapters import MockAdapter
+    from mahalath.ontology import redebate_entry
+
+    entries = OntologyEntryRepository(mongo_db)
+    entries.insert(OntologyEntry(
+        mpl_label="MPL-501", canonical_term="Kopplung", language="de",
+        confidence=7.0,
+        definitions=[DefinitionVersion(
+            text="Erste, schwächere Definition.", language="de",
+            model_used="gemma4:e2b", consensus_score=7.0)],
+        source_document_ids=["doc-de-redeb"],
+    ))
+    mongo_db.documents.insert_one(
+        {"_id": "x", "document_id": "doc-de-redeb", "language": "de"})
+    # A cross-language mapping on this endpoint must go stale when the
+    # definition is refreshed (ADR-029 staleness participation).
+    mongo_db.mappings.insert_one({
+        "mapping_id": "map-redeb", "source_label": "MPL-501",
+        "target_label": "MPL-601", "source_language": "de",
+        "target_language": "en", "relationship": "partial_overlap",
+        "status": "accepted", "is_stale": False, "stale_reasons": [],
+    })
+
+    adapter = MockAdapter(default_response=_json.dumps({
+        "definition": "Klarere, kreuzfamiliäre Definition der Kopplung.",
+        "rationale": "ok", "confidence": 9.0,
+    }))
+    runtime = RuntimeConfig(max_iterations_per_term=3, confidence_threshold=8.0)
+
+    # Dry run: proposes, writes nothing.
+    dry = redebate_entry(mongo_db, "MPL-501", "context about Kopplung",
+                         adapter, runtime, apply=False)
+    assert dry.outcome == "accepted"
+    assert dry.new_definition == "Klarere, kreuzfamiliäre Definition der Kopplung."
+    assert dry.applied is False
+    assert len(entries.get("MPL-501").definitions) == 1  # untouched
+
+    # Apply: appends, preserves the original, advances entry confidence.
+    applied = redebate_entry(mongo_db, "MPL-501", "context about Kopplung",
+                             adapter, runtime, apply=True)
+    assert applied.applied is True
+    refreshed = entries.get("MPL-501")
+    assert len(refreshed.definitions) == 2
+    assert refreshed.definitions[0].text == "Erste, schwächere Definition."  # history kept
+    assert refreshed.definitions[-1].text == applied.new_definition
+    assert refreshed.definitions[-1].language == "de"  # in-lexicon language
+    assert refreshed.definitions[-1].context_id == refreshed.definitions[0].context_id
+    assert refreshed.confidence == 9.0
+    # Debate audit was written.
+    assert DecisionLogRepository(mongo_db).get(
+        refreshed.definitions[-1].decision_log_id) is not None
+    # The endpoint's mapping was flagged stale for re-audit (ADR-029).
+    assert mongo_db.mappings.find_one({"mapping_id": "map-redeb"})["is_stale"] is True

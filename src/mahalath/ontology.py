@@ -264,6 +264,147 @@ def persist_decision_audit(
     _persist_exchanges(result, AgentExchangeRepository(db))
 
 
+@dataclass
+class RedebateResult:
+    """Outcome of re-running the debate on an already-accepted entry."""
+
+    mpl_label: str
+    term: str
+    outcome: str                       # accepted | undecided
+    old_definition: str
+    old_model_used: str | None
+    new_definition: str | None
+    new_confidence: float | None
+    new_model_used: str | None
+    applied: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mpl_label": self.mpl_label,
+            "term": self.term,
+            "outcome": self.outcome,
+            "old_definition": self.old_definition,
+            "old_model_used": self.old_model_used,
+            "new_definition": self.new_definition,
+            "new_confidence": self.new_confidence,
+            "new_model_used": self.new_model_used,
+            "applied": self.applied,
+        }
+
+
+def redebate_entry(
+    db: Database,
+    mpl_label: str,
+    context: str,
+    adapter,
+    runtime: RuntimeConfig,
+    *,
+    style_overlay: str | None = None,
+    apply: bool = False,
+) -> RedebateResult:
+    """Re-run the debate loop on an existing entry to refresh its definition.
+
+    Unlike `persist_debate_result` (which mints a NEW label), this
+    refreshes an entry already in the ontology: it runs the standard
+    PrecisionCritic/SynthesisExplorer loop (cross-family under the live
+    config) over `context` (the entry's source-document section), and on
+    `apply=True` with an accepted outcome APPENDS the new definition to
+    the entry — the prior definition is preserved in history (source
+    preservation), the new one becomes the active (latest) version.
+
+    The new definition is pinned to the entry's existing frame so a
+    quality refresh never accidentally re-frames the term. On apply,
+    the debate's decision_log + agent_exchanges are persisted for
+    audit; a dry run writes nothing at all. Built for the M-B
+    single-model→cross-family cleanup (S2.50); reusable for any
+    quality re-debate.
+    """
+    from mahalath.db.repositories import DefinitionContextRepository
+    from mahalath.debate import run_debate
+    from mahalath.staleness import mark_dependents_stale, update_references
+
+    entries = OntologyEntryRepository(db)
+    entry = entries.get(mpl_label)
+    if entry is None:
+        raise ValueError(f"redebate_entry: no entry {mpl_label!r}")
+    if not entry.definitions:
+        raise ValueError(f"redebate_entry: {mpl_label!r} has no definition")
+
+    current = entry.definitions[-1]
+    src_doc = db.documents.find_one(
+        {"document_id": {"$in": entry.source_document_ids}},
+        {"document_id": 1},
+    )
+    source_document_id = (
+        (src_doc or {}).get("document_id")
+        or (entry.source_document_ids[0] if entry.source_document_ids else "")
+    )
+
+    available_contexts = [
+        {"name": c.name, "description": c.description}
+        for c in DefinitionContextRepository(db).all(kind="frame")
+    ]
+
+    result = run_debate(
+        entry.canonical_term,
+        context,
+        source_document_id,
+        adapter,
+        runtime,
+        style_overlay=style_overlay,
+        available_contexts=available_contexts or None,
+    )
+
+    out = RedebateResult(
+        mpl_label=mpl_label,
+        term=entry.canonical_term,
+        outcome=result.outcome,
+        old_definition=current.text,
+        old_model_used=current.model_used,
+        new_definition=result.final_definition,
+        new_confidence=result.final_confidence,
+        new_model_used=_model_used_in(result),
+    )
+
+    if not apply or result.outcome != ACCEPTED:
+        return out
+
+    # Persist the debate audit (decision_log + exchanges), then append
+    # the refreshed definition. Pin it to the entry's current frame so
+    # the refresh stays in-frame; entry-level confidence advances to the
+    # new cross-family agreement.
+    persist_decision_audit(result, db, outcome=ACCEPTED, resulting_labels=[mpl_label])
+    now = datetime.now(timezone.utc)
+    db.ontology_entries.update_one(
+        {"_id": mpl_label},
+        {
+            "$push": {
+                "definitions": {
+                    "text": result.final_definition,
+                    "language": entry.language,
+                    "model_used": _model_used_in(result),
+                    "decision_log_id": result.decision_log_id,
+                    "context_id": current.context_id,
+                    "consensus_score": result.final_confidence,
+                    "created_at": now,
+                }
+            },
+            "$set": {"confidence": result.final_confidence, "updated_at": now},
+        },
+    )
+    update_references(db, mpl_label)
+    # The entry's definitional content just changed: propagate staleness
+    # to dependents AND to any cross-language mapping on this endpoint
+    # (ADR-029 — redefining an endpoint flags its mappings for re-audit).
+    mark_dependents_stale(
+        db, mpl_label,
+        change_type="definition_redefined",
+        note="cross-family re-debate refreshed the definition",
+    )
+    out.applied = True
+    return out
+
+
 def _model_used_in(result: DebateResult) -> str | None:
     """Pick a representative model name from the recorded exchanges."""
     for exchange in reversed(result.exchanges):

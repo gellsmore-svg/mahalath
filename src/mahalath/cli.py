@@ -400,6 +400,30 @@ def main(argv: list[str] | None = None) -> int:
     listmap_parser.add_argument("--status", default=None,
                                 choices=["accepted", "rejected", "unresolved"])
 
+    redebate_parser = subcommands.add_parser(
+        "redebate-entry",
+        help="Re-run the debate on an existing entry to refresh its "
+        "definition (cross-family under the live config), appending the "
+        "result and preserving history. Dry-run by default; --apply writes.",
+    )
+    redebate_parser.add_argument("label", help="MPL label to re-debate.")
+    redebate_parser.add_argument(
+        "--source", required=True,
+        help="Path to the source document (markdown); the section "
+        "containing the term becomes the debate context.",
+    )
+    redebate_parser.add_argument("--apply", action="store_true")
+    redebate_parser.add_argument(
+        "--style-overlay", default=None,
+        help="Path to a style overlay to use for this debate, overriding "
+        "the config default. Use the source's own overlay (e.g. the de "
+        "pilot overlay for German entries) so voice/language match.",
+    )
+    redebate_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter name (default: runtime.model_adapter).",
+    )
+
     resolvemap_parser = subcommands.add_parser(
         "resolve-mapping",
         help="Operator adjudication of a stored mapping (typically an "
@@ -731,6 +755,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list-mappings":
         return _list_mappings(config, status=args.status)
+
+    if args.command == "redebate-entry":
+        return _redebate_entry(
+            config,
+            label=args.label,
+            source=args.source,
+            apply_flag=args.apply,
+            style_overlay_path=args.style_overlay,
+            adapter_name=args.adapter,
+        )
 
     if args.command == "resolve-mapping":
         return _resolve_mapping(
@@ -1972,6 +2006,104 @@ def _list_mappings(config: AppConfig, *, status: str | None) -> int:
                 for m in items
             ],
         }, indent=2, default=str))
+        return 0
+    finally:
+        close_all()
+
+
+def _redebate_entry(
+    config: AppConfig,
+    *,
+    label: str,
+    source: str,
+    apply_flag: bool,
+    style_overlay_path: str | None,
+    adapter_name: str | None,
+) -> int:
+    import logging as _logging
+
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.chunking import chunk_markdown
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath.db.repositories import OntologyEntryRepository
+    from mahalath.debate import DebateError
+    from mahalath.ontology import redebate_entry
+    from mahalath.style import load_style_overlay
+
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    src_path = Path(source)
+    if not src_path.is_absolute():
+        src_path = Path.cwd() / src_path
+    if not src_path.exists():
+        print(f"mahalath: source not found: {src_path}", file=sys.stderr)
+        return 2
+
+    if style_overlay_path is not None:
+        overlay_path = Path(style_overlay_path)
+        if not overlay_path.is_absolute():
+            overlay_path = Path.cwd() / overlay_path
+        if not overlay_path.exists():
+            print(f"mahalath: style overlay not found: {overlay_path}",
+                  file=sys.stderr)
+            return 2
+        style_overlay = overlay_path.read_text(encoding="utf-8")
+    else:
+        style_overlay = load_style_overlay(config)
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+        entry = OntologyEntryRepository(db).get(label)
+        if entry is None:
+            print(f"mahalath: no entry {label!r}", file=sys.stderr)
+            return 13
+
+        text = src_path.read_text(encoding="utf-8", errors="replace")
+        term_cf = entry.canonical_term.casefold()
+        # The section that mentions the term is its debate context; prefer
+        # the chunk whose heading (its first line) names the term, else the
+        # first mention anywhere.
+        chunks = chunk_markdown(text)
+        matches = [c for c in chunks if term_cf in c.text.casefold()]
+        if not matches:
+            print(
+                f"mahalath: term {entry.canonical_term!r} not found in "
+                f"{src_path.name}", file=sys.stderr,
+            )
+            return 13
+
+        def _heading(chunk) -> str:
+            for line in chunk.text.splitlines():
+                if line.strip():
+                    return line.strip().lstrip("#").strip().casefold()
+            return ""
+
+        chosen = next(
+            (c for c in matches if term_cf in _heading(c)),
+            matches[0],
+        )
+
+        try:
+            result = redebate_entry(
+                db, label, chosen.text, adapter, config.runtime,
+                style_overlay=style_overlay, apply=apply_flag,
+            )
+        except (DebateError, AdapterError) as exc:
+            print(f"mahalath: debate failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps({"ok": True, "applied": result.applied,
+                          **result.to_dict()}, indent=2, default=str))
         return 0
     finally:
         close_all()
