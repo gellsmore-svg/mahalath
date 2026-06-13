@@ -61,6 +61,11 @@ runtime:
   # Ollama executable lives on the Windows side under WSL; this matches
   # the Mnemosyne convention.
   ollama_executable: /mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe
+  # localhost for native installs. Under WSL2, embeddings need the
+  # Windows host over HTTP — use the `wsl-gateway` sentinel host, which
+  # auto-resolves to the WSL2 default gateway at startup (survives WSL
+  # restarts) and requires OLLAMA_HOST=0.0.0.0 on the Windows side:
+  #   ollama_base_url: http://wsl-gateway:11434
   ollama_base_url: http://localhost:11434
   # Generous: the first call after idle loads the model from disk,
   # which takes minutes on laptop hardware.

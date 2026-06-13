@@ -54,30 +54,38 @@ Ollama install, with no required external API.
 
 ## Release checklist (to execute when cutting v1.0.0)
 
-- [ ] All tests green; live MongoDB round-trips pass.
-- [ ] `mahalath init` verified on a clean database (collections, indexes,
+- [x] All tests green; live MongoDB round-trips pass. (437 passing.)
+- [x] `mahalath init` verified on a clean database (collections, indexes,
       taxonomies) — the documented fresh-install path.
-- [ ] **Live embedding verification**: `bge-m3` pulled; `backfill-embeddings
-      --apply` runs end-to-end against real Ollama; `generate-mappings
-      --candidate-source embedding` recovers the planted de↔en pairs
-      (MPL-039 phase, MPL-038 coupling) the prompt stage missed. *(This is
-      the one capability built but not yet proven on live hardware — it
-      needs Ollama HTTP embed reachable from WSL + the model pulled.)*
-- [ ] `README.md` fresh-install quickstart updated (install → `init` →
-      ingest → process → serve).
-- [ ] `config.example.yaml` carries the embedding + candidate-source knobs
-      (commented) and a working default.
-- [ ] Version bumped to `1.0.0` in `pyproject.toml`.
-- [ ] `CHANGELOG.md` written (or `.session-log.md` referenced as history).
-- [ ] Git tag `v1.0.0` (operator-gated).
-- [ ] `.restart.md` updated to mark v1 closed and v2 candidates carried.
+- [x] **Live embedding verification**: `bge-m3` pulled; `backfill-embeddings
+      --apply` ran end-to-end against real Ollama (117/119 embedded); the
+      embedding shortlist recovers the planted de↔en pairs the prompt
+      stage missed — `coupling` ranks #1 for Kopplung, `phase` #1 for
+      Phasenverschiebung (2026-06-13).
+- [x] WSL reboot-robustness: `ollama_base_url` `wsl-gateway` sentinel
+      auto-resolves the Windows gateway IP at startup.
+- [x] `README.md` fresh-install quickstart updated (install → `init` →
+      process → mappings → serve), incl. the WSL embedding note.
+- [x] `config.example.yaml` carries the embedding + candidate-source knobs.
+- [x] Version bumped to `1.0.0` in `pyproject.toml`.
+- [ ] Git tag `v1.0.0` (operator-gated — left for the operator to cut).
+- [x] `.restart.md` updated to mark v1 closed and v2 candidates carried.
 
-## Open items that gate "done"
+## Known limitations (accepted for v1)
 
-1. **Live embedding path** — the only built-but-unproven capability;
-   depends on `bge-m3` pulled and Ollama's HTTP embed endpoint reachable
-   from WSL. If HTTP-from-WSL doesn't work, decide a fallback (port proxy,
-   or a CLI embed route) before v1.
-2. **Re-audit of the 24 stale de↔en mappings** — flagged after the S2.50
-   German re-debate; should run once the live embedding shortlist lands so
-   improved definitions and improved recall land together.
+- **Two RS entries (MPL-055 mode exchange, MPL-059 electricity) are
+  un-embeddable**: bge-m3 emits a non-finite (NaN) value for their text on
+  every input variant tried. They are cleanly skipped (recorded as
+  `skipped_nan`) and simply don't appear in embedding shortlists; in
+  `auto` candidate mode the prompt stage still covers them. Re-wording
+  their definitions, or a different embedding model, would recover them.
+
+## Open items (post-v1, non-blocking)
+
+1. **Re-audit of the stale de↔en mappings** — 24 mappings were flagged
+   stale after the S2.50 German re-debate. `generate-mappings` skips pairs
+   that already hold a mapping, so re-auditing needs the staleness/audit
+   path, not regeneration — a small dedicated pass (v1.x).
+2. **`top_k` default** — 5 misses known-good pairs sitting just outside it
+   (Rückkopplung→Feedback at rank 8); raising it trades gate cost for
+   recall. Left at 5; tune per run via `--top-k`.

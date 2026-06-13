@@ -62,28 +62,57 @@ The system periodically audits its own decision-making (`analysis.py`, read-only
 ## Quick start
 
 ```bash
-# Install
+# 1. Install
 git clone https://github.com/gellsmore-svg/mahalath
 cd mahalath
 python -m venv .venv && .venv/bin/pip install -e ".[dev,web]"
 
-# Make sure MongoDB is running locally and Ollama has gemma4:e2b pulled
+# 2. Prerequisites: MongoDB running locally, and Ollama with the models
+#    pulled (gemma4:e2b for debate; bge-m3 for cross-language mappings).
+#      ollama pull gemma4:e2b
+#      ollama pull bge-m3
 .venv/bin/mahalath db-ping
-.venv/bin/mahalath show-config
 
-# Process a document
+# 3. Prepare a fresh database — creates every collection + index and
+#    seeds the standard taxonomies. Idempotent; safe to re-run.
+.venv/bin/mahalath init
+
+# 4. Process a document
 cp my-source.md input/
 .venv/bin/mahalath process-input --max-terms 10
 
-# Browse the result
+# 5. Browse the result
 .venv/bin/mahalath list-ontology
 .venv/bin/mahalath export-glossary --format md --out ontology/glossary.md
 
-# Query it like an LLM would
+# 6. Query it like an LLM would
 .venv/bin/mahalath retrieve "field" --format text --budget 800
 .venv/bin/mahalath subtree MPL-001 --depth 2
 .venv/bin/mahalath propose-term "lattice" --context "…source snippet…" --near MPL-004
 ```
+
+### Cross-language mappings (multilingual lexicons)
+
+Mappings relate a term in one language to a term in another by *meaning*.
+Candidates are found with meaning-fingerprints (embeddings), so the
+embedding model must be pulled (`bge-m3`) and reachable.
+
+```bash
+# Compute a fingerprint for every entry (dry-run first; --apply writes).
+.venv/bin/mahalath backfill-embeddings --apply
+
+# Generate mappings between two lexicons (dry-run by default).
+.venv/bin/mahalath generate-mappings --source-language de --target-language en
+.venv/bin/mahalath generate-mappings --source-language de --target-language en --apply
+.venv/bin/mahalath list-mappings --status accepted
+```
+
+> **Running under WSL2?** Generation reaches Ollama via the CLI, but
+> embeddings use Ollama's HTTP API, which from WSL means the Windows host,
+> not `localhost`. Set `OLLAMA_HOST=0.0.0.0` on the Windows side, restart
+> Ollama, and set `ollama_base_url: http://wsl-gateway:11434` in
+> `config.yaml` — the `wsl-gateway` host auto-resolves to the Windows
+> gateway and survives WSL restarts.
 
 For continuous operation, run the scheduler:
 

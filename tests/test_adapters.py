@@ -73,3 +73,18 @@ def test_factory_creates_mock_with_config_model() -> None:
     adapter = make_adapter("mock", config)
     assert isinstance(adapter, MockAdapter)
     assert adapter.default_model == config.runtime.model
+
+
+def test_resolve_base_url_passthrough_and_sentinel(monkeypatch) -> None:
+    """A normal URL passes through; the wsl-gateway sentinel is replaced
+    with the resolved gateway IP (port preserved)."""
+    from mahalath.adapters import factory
+
+    assert factory.resolve_base_url("http://localhost:11434") == "http://localhost:11434"
+
+    monkeypatch.setattr(factory, "_wsl_gateway_ip", lambda: "172.22.240.1")
+    assert factory.resolve_base_url("http://wsl-gateway:11434") == "http://172.22.240.1:11434"
+
+    # Unresolvable gateway → leave the URL as-is (embed reports clearly).
+    monkeypatch.setattr(factory, "_wsl_gateway_ip", lambda: None)
+    assert factory.resolve_base_url("http://wsl-gateway:11434") == "http://wsl-gateway:11434"
