@@ -268,6 +268,59 @@ def test_generate_apply_fail_closed_and_skip_existing(mongo_db) -> None:
     assert len(adapter2.calls) == 1  # only the candidate prompt ran
 
 
+def test_resolve_mapping_records_operator_verdict(mongo_db) -> None:
+    from mahalath.mappings import ResolutionError, resolve_mapping
+
+    seed_mapping_relations(mongo_db)
+    _seed_pair(mongo_db)
+    # Land an unresolved mapping (three-way split, the Kopplung shape).
+    adapter = _SeqAdapter(responses=[
+        _verdict("partial_overlap", 7.5),
+        _verdict("none", 8.5),
+        _verdict("narrower_than", 8.5),
+    ])
+    a = attribute_mapping(mongo_db, "MPL-117", "MPL-038", adapter,
+                          passes=3, apply=True)
+    assert a.status == "unresolved"
+
+    repo = MappingRepository(mongo_db)
+    before = repo.get_pair("MPL-117", "MPL-038")
+    assert before.decided_via is None
+
+    m = resolve_mapping(
+        mongo_db, "MPL-117", "MPL-038",
+        verdict="none", rationale="lexical pull, not a real relation",
+        decided_via="operator_delegate",
+    )
+    assert m.status == "rejected"
+    assert m.relationship == "none"
+    assert m.relationship_id is None
+    assert m.decided_via == "operator_delegate"
+    assert m.decision_rationale == "lexical pull, not a real relation"
+    assert m.decided_at is not None
+    # The model-consensus audit survives the operator verdict.
+    assert m.per_pass == before.per_pass
+    assert m.models_used == before.models_used
+
+    # An accepting verdict must name a real taxonomy relation.
+    m2 = resolve_mapping(
+        mongo_db, "MPL-117", "MPL-038",
+        verdict="partial_overlap", rationale="on reflection, overlaps",
+    )
+    assert m2.status == "accepted"
+    assert m2.relationship == "partial_overlap"
+    assert m2.relationship_id is not None
+
+    # Garbage verdict and missing pair both fail closed.
+    import pytest
+    with pytest.raises(ResolutionError):
+        resolve_mapping(mongo_db, "MPL-117", "MPL-038",
+                        verdict="sorta_related", rationale="x")
+    with pytest.raises(ResolutionError):
+        resolve_mapping(mongo_db, "MPL-117", "MPL-999",
+                        verdict="none", rationale="x")
+
+
 def test_mappings_go_stale_when_endpoint_changes(mongo_db) -> None:
     from mahalath.staleness import mark_dependents_stale
 

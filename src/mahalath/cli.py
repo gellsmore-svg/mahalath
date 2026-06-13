@@ -400,6 +400,24 @@ def main(argv: list[str] | None = None) -> int:
     listmap_parser.add_argument("--status", default=None,
                                 choices=["accepted", "rejected", "unresolved"])
 
+    resolvemap_parser = subcommands.add_parser(
+        "resolve-mapping",
+        help="Operator adjudication of a stored mapping (typically an "
+        "unresolved one). The model-consensus audit is preserved; the "
+        "verdict is recorded with decided_via provenance.",
+    )
+    resolvemap_parser.add_argument("source_label")
+    resolvemap_parser.add_argument("target_label")
+    resolvemap_parser.add_argument(
+        "--verdict", required=True,
+        help="A mapping_relation name (→ accepted), or 'none' (→ rejected).",
+    )
+    resolvemap_parser.add_argument("--rationale", required=True)
+    resolvemap_parser.add_argument(
+        "--decided-via", default="operator",
+        help="Provenance tag: 'operator' (default) or 'operator_delegate'.",
+    )
+
     subcommands.add_parser(
         "backfill-paths",
         help="One-shot migration: recompute the materialised ancestor "
@@ -713,6 +731,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list-mappings":
         return _list_mappings(config, status=args.status)
+
+    if args.command == "resolve-mapping":
+        return _resolve_mapping(
+            config,
+            source_label=args.source_label,
+            target_label=args.target_label,
+            verdict=args.verdict,
+            rationale=args.rationale,
+            decided_via=args.decided_via,
+        )
 
     if args.command == "backfill-language":
         return _backfill_language(config)
@@ -1947,6 +1975,44 @@ def _list_mappings(config: AppConfig, *, status: str | None) -> int:
         return 0
     finally:
         close_all()
+
+
+def _resolve_mapping(
+    config: AppConfig,
+    *,
+    source_label: str,
+    target_label: str,
+    verdict: str,
+    rationale: str,
+    decided_via: str,
+) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.mappings import ResolutionError, resolve_mapping
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+    try:
+        m = resolve_mapping(
+            db, source_label, target_label,
+            verdict=verdict, rationale=rationale, decided_via=decided_via,
+        )
+    except ResolutionError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 13
+    finally:
+        close_all()
+    print(json.dumps({
+        "ok": True,
+        "pair": f"{m.source_label} -> {m.target_label}",
+        "status": m.status,
+        "relationship": m.relationship,
+        "decided_via": m.decided_via,
+        "decided_at": m.decided_at,
+    }, indent=2, default=str))
+    return 0
 
 
 def _backfill_language(config: AppConfig) -> int:

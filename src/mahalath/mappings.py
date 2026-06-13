@@ -409,6 +409,78 @@ def _store_attribution(
     )
 
 
+# --- Operator adjudication ----------------------------------------------------
+
+
+class ResolutionError(ValueError):
+    """Raised when an operator resolution is malformed or unmappable."""
+
+
+def resolve_mapping(
+    db: Database,
+    source_label: str,
+    target_label: str,
+    *,
+    verdict: str,
+    rationale: str,
+    decided_via: str = "operator",
+) -> Mapping:
+    """Render a human (or delegate) verdict on a stored mapping.
+
+    `verdict` is a taxonomy relation NAME (→ status `accepted`), or
+    `none`/`reject` (→ status `rejected`, relationship `none`). The
+    model-consensus audit (`per_pass`, `models_used`) is preserved
+    verbatim; `decided_via`/`decision_rationale`/`decided_at` record
+    who decided and why, so the operator verdict never masquerades as
+    model consensus (and can be excluded from calibration, the S2.43
+    `decided_via` intent). Re-audit is the staleness path's job, so a
+    resolution also clears any pending `is_stale` flag.
+    """
+    repo = MappingRepository(db)
+    existing = repo.get_pair(source_label, target_label)
+    if existing is None:
+        raise ResolutionError(
+            f"no mapping {source_label} -> {target_label} to resolve")
+
+    v = verdict.strip().casefold()
+    relations = DefinitionContextRepository(db).all(kind="mapping_relation")
+    by_name = {r.name.casefold(): r for r in relations}
+    if v in (NO_RELATION, "reject", "rejected"):
+        status, rel_name, rel_id = "rejected", NO_RELATION, None
+    elif v in by_name:
+        status = "accepted"
+        rel_name = by_name[v].name
+        rel_id = by_name[v].context_id
+    else:
+        raise ResolutionError(
+            f"verdict {verdict!r} is neither {NO_RELATION!r} nor a "
+            f"mapping_relation ({', '.join(sorted(by_name)) or 'none seeded'})"
+        )
+
+    now = datetime.now(timezone.utc)
+    db.mappings.update_one(
+        {"source_label": source_label, "target_label": target_label},
+        {"$set": {
+            "status": status,
+            "relationship": rel_name,
+            "relationship_id": rel_id,
+            "rationale": rationale,
+            "decided_via": decided_via,
+            "decision_rationale": rationale,
+            "decided_at": now,
+            "is_stale": False,
+            "updated_at": now,
+        }},
+    )
+    resolved = repo.get_pair(source_label, target_label)
+    assert resolved is not None
+    log.info(
+        "mappings: resolved %s -> %s: %s (%s) via %s",
+        source_label, target_label, status, rel_name, decided_via,
+    )
+    return resolved
+
+
 # --- Generation job -----------------------------------------------------------
 
 

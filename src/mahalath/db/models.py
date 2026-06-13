@@ -234,7 +234,15 @@ class Mapping(_MahalathModel):
     status: str = "unresolved"
     per_pass: list[dict[str, Any]] = Field(default_factory=list)
     models_used: list[str] = Field(default_factory=list)
+    # Operator adjudication of an `unresolved` (or any) mapping. The
+    # model-consensus audit (per_pass, models_used) is NEVER discarded;
+    # decided_via marks WHO rendered the final verdict ("operator" /
+    # "operator_delegate"), decision_rationale is their reasoning, and
+    # `relationship`/`status` carry the resolved verdict. Mirrors the
+    # action_proposals operator_decision pattern (S2.43).
     decided_via: str | None = None
+    decision_rationale: str | None = None
+    decided_at: datetime | None = None
     is_stale: bool = False
     stale_reasons: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
