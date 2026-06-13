@@ -53,6 +53,11 @@ def test_default_rem_job_counts_undecided(
     # job tail writes the effectiveness snapshot to cwd-relative logs/,
     # so run from a temp dir to keep the repo's logs/ test-free.
     monkeypatch.chdir(tmp_path)
+    # Use the mock adapter: the REM job builds a generation adapter, and the
+    # default ollama_cli adapter requires the local Ollama executable to exist
+    # (absent on CI runners). This test only asserts the job runs cleanly and
+    # writes the effectiveness snapshot, so the real model path is incidental.
+    mongo_config.runtime.model_adapter = "mock"
     _default_rem_job(mongo_config)
     snapshot = tmp_path / "logs" / "effectiveness.jsonl"
     assert snapshot.exists() and snapshot.read_text().count("\n") == 1
