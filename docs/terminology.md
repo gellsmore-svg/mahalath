@@ -170,10 +170,9 @@ spelling out.
 
 ## Sibling projects
 
-- **Tirzah** — a separate memory-retrieval project (formerly Mnemosyne)
-  that codex owns. Shares Mahalath's philosophy but is kept runtime-
-  independent (ADR-014): Mahalath does not depend on Tirzah to run, and
-  Claude does not modify Tirzah's repo without an explicit go-ahead.
+- **Tirzah** — a separate memory-retrieval project. Shares Mahalath's
+  philosophy but is kept runtime-independent (ADR-014): Mahalath does not
+  depend on Tirzah to run.
   Semantic similarity / context-optimisation work was originally slated
   to live here. (If you see "TSR" anywhere, that was a dictation garble
   for Tirzah.)

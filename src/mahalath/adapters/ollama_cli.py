@@ -4,7 +4,7 @@ Why subprocess and not the HTTP API: on WSL2 the Windows Ollama daemon
 binds to Windows-side localhost; reaching it over HTTP from WSL needs
 additional binding configuration on the Windows side that we don't
 want to require of operators. The CLI route is already used by
-Mnemosyne with the same Ollama install, so we follow that pattern for
+Tirzah with the same Ollama install, so we follow that pattern for
 operational parity.
 
 Invocation:

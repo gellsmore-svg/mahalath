@@ -64,7 +64,7 @@ them.
    `chat.py` into a shared ranker so chat and retrieval cannot drift.
 4. **Embeddings live in Tirzah.** Mahalath core does exact + `$text`
    fuzzy matching. Semantic/vector similarity is delegated to Tirzah
-   when needed (ADR-014; standing rule: codex owns Tirzah). The API is
+   when needed (ADR-014). The API is
    shaped so a semantic backend can be slotted behind `search_terms`
    later without changing callers.
 5. **Bundles are budgeted.** Output is pruned to a token budget — never

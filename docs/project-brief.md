@@ -10,7 +10,7 @@ and ontology for AI-to-AI reasoning, with on-demand translation back to
 natural human languages.
 
 The system operates as a memory-light, ontology-heavy counterpart to a
-memory retrieval layer like Mnemosyne. Where a retrieval system answers
+memory retrieval layer like Tirzah. Where a retrieval system answers
 "what do we know that's relevant to this question?", Mahalath answers
 "what do the words we use actually mean, and where do they need to be
 split?"
@@ -35,7 +35,7 @@ split?"
 - Cloud execution (local-first only).
 - Replacing human review for ambiguous cases. Low-confidence outcomes go
   to an undecided queue, not auto-accept.
-- Becoming a memory retrieval engine. Mnemosyne fills that role; Mahalath
+- Becoming a memory retrieval engine. Tirzah fills that role; Mahalath
   feeds it precision, not the other way round.
 
 ## Primary Users
@@ -66,15 +66,15 @@ agent loop → ontology write path end to end on real source material.
 This corresponds to Stage 1 in the build roadmap (to be written in the
 next chunk after chunk 4 scaffolding is in place).
 
-## Conceptual Relationship to Mnemosyne
+## Conceptual Relationship to Tirzah
 
-Mahalath and Mnemosyne are sibling systems sharing operating philosophy
+Mahalath and Tirzah are sibling systems sharing operating philosophy
 (local-first, MongoDB, adapter boundary for swappable models, REM-style
 async consolidation, multi-agent with bounded iteration,
 undecided/review queue, watched ingest folder) but with different
 *purposes*.
 
-| Concern | Mnemosyne | Mahalath |
+| Concern | Tirzah | Mahalath |
 |---|---|---|
 | Question answered | Given a query, find relevant content | Given content, refine precise meanings |
 | Primary write target | Chunk nodes + edges | Ontology entries (MPL terms) + relations |
@@ -107,5 +107,5 @@ sense), which makes it a strong test bench for the contradistinct-split
 mechanism that section 3.3 of the requirements calls for.
 
 Mahalath should ingest these as source Markdown directly, not via
-Mnemosyne. Both systems can hold their own representations of the same
+Tirzah. Both systems can hold their own representations of the same
 source files without conflict.

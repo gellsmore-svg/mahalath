@@ -37,8 +37,8 @@ should be made explicit:
 **The proposal's `semantic_instance` document must NOT be built as
 written.** It is utterance-level (a locution span + its inferred
 intent); Mahalath's unit is the *concept*. Utterance-level instances
-are memory/passage work — Tirzah's territory (ADR-014: codex owns
-Tirzah; runtime independence). What Mahalath can absorb is the
+are memory/passage work — Tirzah's territory (ADR-014: runtime
+independence). What Mahalath can absorb is the
 *concept-level* residue of the idea: per-definition intent annotation.
 
 ## Evaluation by task

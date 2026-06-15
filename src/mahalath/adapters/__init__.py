@@ -6,7 +6,7 @@ adapters are provided in Stage 1:
 
 - `mock` for deterministic tests
 - `ollama_cli` for the Windows-side Ollama binary, reached from WSL via
-  subprocess (matches the Mnemosyne pattern: prompt over stdin, response
+  subprocess (matches the Tirzah pattern: prompt over stdin, response
   over stdout, with a default 180s timeout).
 
 Adapter selection at runtime is by `runtime.model_adapter` in the loaded

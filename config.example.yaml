@@ -1,6 +1,6 @@
 mongo:
   uri: mongodb://localhost:27017
-  # Distinct from Mnemosyne's database; same Mongo instance is fine.
+  # Distinct from Tirzah's database; same Mongo instance is fine.
   # See ADR-017.
   database: mahalath_dev
 
@@ -59,7 +59,7 @@ runtime:
   confidence_scale_max: 10.0
 
   # Ollama executable lives on the Windows side under WSL; this matches
-  # the Mnemosyne convention.
+  # the Tirzah convention.
   ollama_executable: /mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe
   # localhost for native installs. Under WSL2, embeddings need the
   # Windows host over HTTP — use the `wsl-gateway` sentinel host, which

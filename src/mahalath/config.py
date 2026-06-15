@@ -4,7 +4,7 @@ Loads `config.yaml` (operator's local) when present, falling back to
 `config.example.yaml` (committed) so a fresh checkout is runnable
 without any operator-side configuration.
 
-Schema deliberately mirrors `~/domains/Mnemosyne/src/mnemosyne/config.py`
+Schema deliberately mirrors the sibling Tirzah project's config
 in structure (MongoConfig, PathConfig, RuntimeConfig nested under
 AppConfig) where the concerns overlap. Mahalath-specific fields
 (agent role enablement, debate iteration cap, confidence threshold,

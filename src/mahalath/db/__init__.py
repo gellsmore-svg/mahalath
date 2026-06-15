@@ -9,7 +9,7 @@ Collections (see docs/architecture-decisions.md ADR-001, ADR-017):
 - agent_exchanges   per-iteration prompt/response records
 - undecided_queue   items routed for human/escalation review
 
-Logical separation from Mnemosyne is by database name (`mahalath_dev`
+Logical separation from Tirzah is by database name (`mahalath_dev`
 default per ADR-017); the same MongoDB instance hosts both.
 """
 

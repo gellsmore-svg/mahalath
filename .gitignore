@@ -46,3 +46,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal working/state docs — never publish
+.restart.md
+.restart.md.*.bak
+.session-log.md
