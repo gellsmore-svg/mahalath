@@ -246,6 +246,13 @@ The full decision record (30 ADRs + open questions) lives in `docs/architecture-
 
 Stage 2, deep. The full self-sustaining loop works end to end: ingest → debate → persist → hierarchy review → operator/frontier queues → REM re-review → staleness self-healing → glossary export — plus the complete retrieval layer (search / codified refs / budgeted bundles / subtree / propose-term, CLI + HTTP), the complete intent extension (taxonomy, unanimity-gated attribution, intent-aware retrieval), and nightly decision-effectiveness self-analysis (§3.4), validated against the live corpus and applied against the live lexicon. The multilingual architecture is accepted and phased (ADR-028–030); the live lexicon is English. **398 tests, all green**, including live MongoDB round-trips. Development history is chronicled slice-by-slice in `.session-log.md`.
 
+## Knowledge bundle
+
+A machine- and human-readable knowledge map of Mahalath's concepts and modules is
+published as an [Open Knowledge Format](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)
+bundle under [`okf/`](okf/index.md) — markdown with YAML frontmatter, linked into a
+concept graph.
+
 ## License
 
 See LICENSE.
