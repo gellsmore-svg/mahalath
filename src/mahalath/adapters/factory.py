@@ -82,6 +82,15 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
             delivery=h.delivery,
             callback_host=h.callback_host,
             callback_port=h.callback_port,
+            transport=h.transport,
+            kafka_bootstrap_servers=h.kafka_bootstrap_servers,
+            kafka_input_topic=h.kafka_input_topic,
+            kafka_results_topic=h.kafka_results_topic,
+            rabbitmq_url=h.rabbitmq_url,
+            rabbitmq_input_queue=h.rabbitmq_input_queue,
+            redis_url=h.redis_url,
+            redis_input_stream=h.redis_input_stream,
+            redis_results_stream=h.redis_results_stream,
         )
     raise AdapterError(
         f"Unknown adapter {name!r}. Supported: mock, ollama_cli, claude_api, hoglah."

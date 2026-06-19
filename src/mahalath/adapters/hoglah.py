@@ -132,7 +132,56 @@ class HoglahAdapter:
         delivery: str = "poll",
         callback_host: str = "127.0.0.1",
         callback_port: int = 0,
+        transport: str = "store",
+        kafka_bootstrap_servers: str = "localhost:9092",
+        kafka_input_topic: str = "hoglah-jobs",
+        kafka_results_topic: str = "hoglah-results",
+        rabbitmq_url: str = "amqp://guest:guest@localhost:5672/",
+        rabbitmq_input_queue: str = "hoglah-jobs",
+        redis_url: str = "redis://localhost:6379/0",
+        redis_input_stream: str = "hoglah-jobs",
+        redis_results_stream: str = "hoglah-results",
     ) -> None:
+        self.default_model = default_model
+        self.embedding_model = embedding_model
+        self.default_timeout_seconds = default_timeout_seconds
+        self.transport = transport
+        self._client: Any | None = None
+        self._submitter: Any | None = None
+        self._receiver: _CallbackReceiver | None = None
+        self._callback_url: str | None = None
+
+        if transport != "store":
+            # Messaging path: publish a job-request over a broker and await the
+            # result over the same broker. No SQLite client, no callback receiver;
+            # the matching `hoglah {kafka,rabbitmq,redis}-bridge` worker executes it.
+            try:
+                from hoglah.messaging_submitter import (
+                    MessagingSubmitter,
+                    make_submitter_transport,
+                )
+            except ImportError as exc:  # pragma: no cover - exercised via factory
+                raise AdapterError(
+                    "The 'hoglah' adapter with a messaging transport requires the hoglah "
+                    "package and the broker client. Install with: "
+                    "pip install 'mahalath[hoglah-kafka]' (or hoglah-rabbitmq / hoglah-redis)."
+                ) from exc
+            self._submitter = MessagingSubmitter(
+                make_submitter_transport(
+                    transport,
+                    kafka_bootstrap_servers=kafka_bootstrap_servers,
+                    kafka_input_topic=kafka_input_topic,
+                    kafka_results_topic=kafka_results_topic,
+                    rabbitmq_url=rabbitmq_url,
+                    rabbitmq_input_queue=rabbitmq_input_queue,
+                    redis_url=redis_url,
+                    redis_input_stream=redis_input_stream,
+                    redis_results_stream=redis_results_stream,
+                )
+            )
+            return
+
+        # Store path (default): the shared SQLite queue + poll/callback delivery.
         # Lazy import so hoglah stays an optional dependency: only the operator
         # who selects the "hoglah" adapter needs it installed.
         try:
@@ -150,17 +199,12 @@ class HoglahAdapter:
 
         self.db_path = str(Path(db_path).expanduser())
         self.output_dir = Path(output_dir).expanduser()
-        self.default_model = default_model
-        self.embedding_model = embedding_model
-        self.default_timeout_seconds = default_timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
         self.delivery = delivery
 
         # Callback mode: stand up a local HTTP receiver and advertise its URL.
         # Mahalath OWNS this URL and passes it to Hoglah per job — Hoglah just
         # POSTs to whatever it's given. The output folder remains a fallback.
-        self._receiver: _CallbackReceiver | None = None
-        self._callback_url: str | None = None
         if delivery == "callback":
             self._receiver = _CallbackReceiver(callback_host, callback_port)
             self._callback_url = self._receiver.url
@@ -225,8 +269,47 @@ class HoglahAdapter:
                 )
             time.sleep(self.poll_interval_seconds)
 
+    def _run(
+        self,
+        kind: str,
+        *,
+        prompt: str,
+        model: str,
+        timeout: int,
+        want_json: bool = False,
+    ) -> dict[str, Any]:
+        """Submit a job and return its terminal result dict, via the configured
+        transport — a messaging broker (MessagingSubmitter) or the SQLite store
+        (submit + poll/callback). The result shape is identical either way."""
+        if self._submitter is not None:
+            return self._submitter.submit(
+                kind=kind,
+                prompt=prompt,
+                model=model,
+                timeout=float(timeout) + 30,  # slack for daemon pickup, as in the store path
+                fmt="json" if (want_json and kind == "generate") else None,
+                tags=["mahalath"],
+                metadata={"source": "mahalath"},
+            )
+        if kind == "embed":
+            job_id = self._client.submit_embedding(
+                prompt, model=model, timeout_seconds=int(timeout),
+                callback_url=self._callback_url,
+            )
+        else:
+            job_id = self._client.submit(
+                prompt=prompt, model=model, timeout_seconds=int(timeout),
+                format="json" if want_json else None, callback_url=self._callback_url,
+            )
+        result = self._await_result(job_id, timeout + 30)
+        result.setdefault("job_id", job_id)
+        return result
+
     def close(self) -> None:
-        """Shut down the callback receiver (if any). Safe to call repeatedly."""
+        """Shut down the messaging submitter / callback receiver. Safe to call repeatedly."""
+        if self._submitter is not None:
+            self._submitter.close()
+            self._submitter = None
         if self._receiver is not None:
             self._receiver.close()
             self._receiver = None
@@ -252,23 +335,15 @@ class HoglahAdapter:
         timeout = timeout_seconds or self.default_timeout_seconds
 
         start = time.monotonic()
-        job_id = self._client.submit(
-            prompt=prompt,
-            model=model_name,
-            timeout_seconds=timeout,
-            format="json" if want_json else None,
-            callback_url=self._callback_url,
-        )
-        # Allow a little slack beyond the per-job timeout for the daemon to
-        # pick up the job and flush the output file.
-        result = self._await_result(job_id, timeout + 30)
+        result = self._run("generate", prompt=prompt, model=model_name, timeout=timeout, want_json=want_json)
+        job_id = result.get("job_id", "?")
         self._require_completed(result, job_id)
 
         return AdapterResponse(
             text=result.get("output") or "",
             model=result.get("model") or model_name,
             duration_ms=int((time.monotonic() - start) * 1000),
-            raw={"job_id": job_id, "via": "hoglah", "metadata": result.get("metadata", {})},
+            raw={"job_id": job_id, "via": "hoglah", "transport": self.transport, "metadata": result.get("metadata", {})},
         )
 
     def embed(
@@ -282,11 +357,8 @@ class HoglahAdapter:
         timeout = timeout_seconds or self.default_timeout_seconds
 
         start = time.monotonic()
-        job_id = self._client.submit_embedding(
-            text, model=model_name, timeout_seconds=timeout,
-            callback_url=self._callback_url,
-        )
-        result = self._await_result(job_id, timeout + 30)
+        result = self._run("embed", prompt=text, model=model_name, timeout=timeout)
+        job_id = result.get("job_id", "?")
 
         # Hoglah fails the job (not a bogus vector) when the model emits a
         # non-finite value; surface that as EmbeddingNaNError so Mahalath's

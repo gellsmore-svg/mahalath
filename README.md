@@ -229,6 +229,14 @@ nothing about Mahalath is baked into Hoglah, so the same mechanism works for
 any caller. Embedding/fingerprinting routes through Hoglah's embedding jobs
 (`bge-m3`).
 
+**Messaging transports.** Instead of the shared SQLite store, Mahalath can submit
+over a broker — set `runtime.hoglah.transport` to `kafka`, `rabbitmq`, or `redis`
+(default `store`). It then publishes a job-request message and awaits the result
+over the same broker via Hoglah's `MessagingSubmitter`; a matching
+`hoglah {kafka,rabbitmq,redis}-bridge` worker must run on the configured
+topics/queues/streams. Install the broker client with the matching extra:
+`pip install 'mahalath[hoglah-kafka]'` (or `hoglah-rabbitmq` / `hoglah-redis`).
+
 ## Design commitments
 
 - **Labels are immutable and opaque** — re-parenting moves tree edges, never the label; no semantics in the key (ADR-018/021).

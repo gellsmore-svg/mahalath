@@ -199,3 +199,70 @@ def test_hoglah_callback_port_is_configurable(tmp_path) -> None:
 def test_hoglah_adapter_rejects_unknown_delivery(tmp_path) -> None:
     with pytest.raises(AdapterError, match="delivery"):
         _adapter(tmp_path / "q.db", tmp_path / "o", delivery="telepathy")
+
+
+# --------------------------------------------------------------------------- #
+# Messaging transport (kafka / rabbitmq / redis) — routed through Hoglah's
+# MessagingSubmitter. Exercised broker-free with a fake submitter transport.
+# --------------------------------------------------------------------------- #
+
+pytest.importorskip("hoglah.messaging_submitter")
+
+
+class _FakeTransport:
+    def __init__(self) -> None:
+        self.published: list[tuple[bytes, str]] = []
+        self.kinds: list[str] = []
+
+    def reply_destination(self):
+        return "hoglah-results"
+
+    def publish_request(self, body, *, correlation_id):
+        self.published.append((body, correlation_id))
+
+    def await_result(self, correlation_id, timeout):
+        kind = json.loads(self.published[-1][0]).get("kind")
+        self.kinds.append(kind)
+        base = {"correlation_id": correlation_id, "status": "completed", "job_id": "jX", "model": "stub-model:1b"}
+        if kind == "embed":
+            return {**base, "embedding": [0.1, 0.2, 0.3], "embedding_dim": 3}
+        return {**base, "output": "[STUB] queued answer"}
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_transport(monkeypatch):
+    fake = _FakeTransport()
+    monkeypatch.setattr(
+        "hoglah.messaging_submitter.make_submitter_transport", lambda *a, **k: fake
+    )
+    return fake
+
+
+def _messaging_adapter(transport):
+    return HoglahAdapter(
+        db_path="unused", output_dir="unused",
+        default_model="stub-model:1b", embedding_model="stub-embed",
+        transport=transport,
+    )
+
+
+def test_hoglah_messaging_routes_generate(fake_transport) -> None:
+    adapter = _messaging_adapter("redis")
+    assert adapter._client is None and adapter._submitter is not None  # messaging, not store
+    resp = adapter.generate("hello there", timeout_seconds=5)
+    assert resp.text == "[STUB] queued answer"
+    assert resp.raw["via"] == "hoglah" and resp.raw["transport"] == "redis"
+    assert fake_transport.kinds == ["generate"]
+    adapter.close()
+
+
+def test_hoglah_messaging_routes_embed(fake_transport) -> None:
+    adapter = _messaging_adapter("kafka")
+    emb = adapter.embed("vorton", timeout_seconds=5)
+    assert emb.vector == [0.1, 0.2, 0.3]
+    assert emb.dim == 3
+    assert fake_transport.kinds == ["embed"]
+    adapter.close()

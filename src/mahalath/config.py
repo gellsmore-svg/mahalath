@@ -137,6 +137,22 @@ class HoglahRoutingConfig(BaseModel):
     callback_host: str = "127.0.0.1"
     callback_port: int = 0
 
+    # Submission transport: "store" (default — write to the shared SQLite queue
+    # and collect by poll/callback) or a messaging broker ("kafka" | "rabbitmq" |
+    # "redis"), which publishes a job-request message and awaits the result over
+    # the same broker via Hoglah's MessagingSubmitter. The matching
+    # `hoglah {kafka,rabbitmq,redis}-bridge` worker must run on these
+    # topics/queues/streams (db_path/output_dir/delivery are ignored for these).
+    transport: str = "store"
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_input_topic: str = "hoglah-jobs"
+    kafka_results_topic: str = "hoglah-results"
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
+    rabbitmq_input_queue: str = "hoglah-jobs"
+    redis_url: str = "redis://localhost:6379/0"
+    redis_input_stream: str = "hoglah-jobs"
+    redis_results_stream: str = "hoglah-results"
+
 
 class IngestionConfig(BaseModel):
     poll_interval_seconds: int = 60
