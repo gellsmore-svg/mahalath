@@ -182,6 +182,11 @@ _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MAHALATH_MONGO_DB": ("mongo", "database"),
     "OLLAMA_BASE_URL": ("runtime", "ollama_base_url"),
     "OLLAMA_EXECUTABLE": ("runtime", "ollama_executable"),
+    # Adapter selection from the environment so the Noa runtime can route Mahalath
+    # through Hoglah (or ollama_http) without a config file. The hoglah adapter's
+    # queue paths default to ~/.hoglah/* — matching the daemon's defaults.
+    "MAHALATH_MODEL_ADAPTER": ("runtime", "model_adapter"),
+    "MAHALATH_EMBEDDING_MODEL": ("runtime", "embedding_model"),
 }
 
 
