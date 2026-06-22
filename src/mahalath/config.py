@@ -13,6 +13,7 @@ REM cron schedule) live under their own sub-models.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -84,9 +85,10 @@ class RuntimeConfig(BaseModel):
     # frontier-quality answers if the operator accepts the per-request
     # cost.
     chat_adapter: str = "ollama_cli"
-    ollama_executable: Path = Path(
-        "/mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe"
-    )
+    # Resolved from PATH by default so a fresh install is portable; point it at
+    # a specific binary (e.g. a WSL-mounted ollama.exe) via config.yaml or the
+    # OLLAMA_EXECUTABLE env var. The HTTP path (ollama_base_url) is preferred.
+    ollama_executable: Path = Path("ollama")
     ollama_base_url: str = "http://localhost:11434"
     # Generous by design: the FIRST call after idle loads a multi-GB
     # model from disk, which takes minutes on laptop hardware (operator
@@ -172,13 +174,31 @@ class AppConfig(BaseModel):
     rem: RemConfig = Field(default_factory=RemConfig)
 
 
+# Env-var → (section, key) overrides, applied on top of the YAML (and even with no
+# config file present). Keeps the shared OLLAMA_BASE_URL / MONGO settings in one
+# place so the Noa runtime can configure every sibling from a single .env.
+_ENV_OVERRIDES: dict[str, tuple[str, str]] = {
+    "MAHALATH_MONGO_URI": ("mongo", "uri"),
+    "MAHALATH_MONGO_DB": ("mongo", "database"),
+    "OLLAMA_BASE_URL": ("runtime", "ollama_base_url"),
+    "OLLAMA_EXECUTABLE": ("runtime", "ollama_executable"),
+}
+
+
+def _apply_env_overrides(data: dict) -> dict:
+    for env_var, (section, key) in _ENV_OVERRIDES.items():
+        value = os.environ.get(env_var)
+        if value:
+            data.setdefault(section, {})[key] = value
+    return data
+
+
 def load_config(path: Path | str = "config.yaml") -> AppConfig:
     config_path = Path(path)
     if not config_path.exists():
         example_path = Path("config.example.yaml")
-        if example_path.exists():
-            config_path = example_path
-        else:
-            return AppConfig()
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return AppConfig.model_validate(data)
+        config_path = example_path if example_path.exists() else config_path
+    data = {}
+    if config_path.exists():
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return AppConfig.model_validate(_apply_env_overrides(data))

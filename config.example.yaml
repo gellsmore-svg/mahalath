@@ -58,9 +58,12 @@ runtime:
   confidence_threshold: 8.0
   confidence_scale_max: 10.0
 
-  # Ollama executable lives on the Windows side under WSL; this matches
-  # the Tirzah convention.
-  ollama_executable: /mnt/c/Users/cello/AppData/Local/Programs/Ollama/ollama.exe
+  # Resolved from PATH by default (portable). The HTTP path (ollama_base_url)
+  # is preferred; only the `ollama_cli` adapter shells out to this binary.
+  # Override for a non-PATH install, e.g. a WSL-mounted Windows binary:
+  #   ollama_executable: /mnt/c/Users/<you>/AppData/Local/Programs/Ollama/ollama.exe
+  # or set the OLLAMA_EXECUTABLE env var (Noa renders this from .env).
+  ollama_executable: ollama
   # localhost for native installs. Under WSL2, embeddings need the
   # Windows host over HTTP — use the `wsl-gateway` sentinel host, which
   # auto-resolves to the WSL2 default gateway at startup (survives WSL
