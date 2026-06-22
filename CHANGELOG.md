@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `mahalath migrate` — a consolidated, ordered, **idempotent** schema-migration
+  command with a `schema_migrations` ledger, replacing the scattered
+  `backfill-*` one-shots (which remain as legacy aliases). Supports `--status`
+  and `--dry-run`.
+
 ## [1.1.0] - 2026-06-22
 
 Declared in `pyproject` earlier but first tagged here. All additions are

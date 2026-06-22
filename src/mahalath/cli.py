@@ -366,10 +366,24 @@ def main(argv: list[str] | None = None) -> int:
         "list-stale",
         help="List ontology entries flagged as stale (upstream changed).",
     )
+    migrate_parser = subcommands.add_parser(
+        "migrate",
+        help="Run all pending schema migrations in order (idempotent). The "
+        "consolidated entry point for the backfill-* one-shots.",
+    )
+    migrate_parser.add_argument(
+        "--status", action="store_true",
+        help="Show applied + pending migrations without running anything.",
+    )
+    migrate_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="List the migrations that would run, without applying them.",
+    )
+
     subcommands.add_parser(
         "backfill-references",
-        help="One-shot migration: recompute references_labels for every "
-        "ontology entry. Use on databases that pre-date S2.17.",
+        help="One-shot migration (legacy; prefer `migrate`): recompute "
+        "references_labels for every ontology entry. Use on databases that pre-date S2.17.",
     )
     subcommands.add_parser(
         "backfill-language",
@@ -777,6 +791,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "list-stale":
         return _list_stale(config)
+
+    if args.command == "migrate":
+        return _migrate(config, status_only=args.status, dry_run=args.dry_run)
 
     if args.command == "backfill-references":
         return _backfill_references(config)
@@ -1939,6 +1956,24 @@ def _effectiveness(
         if snapshot:
             path = write_effectiveness_snapshot(config, report)
             print(f"\nsnapshot appended: {path}", file=sys.stderr)
+        return 0
+    finally:
+        close_all()
+
+
+def _migrate(config: AppConfig, *, status_only: bool, dry_run: bool) -> int:
+    from mahalath.db import close_all, ensure_indexes, get_database
+    from mahalath import migrations
+
+    try:
+        db = get_database(config)
+        ensure_indexes(db)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+    try:
+        report = migrations.status(db) if status_only else migrations.migrate(db, dry_run=dry_run)
+        print(json.dumps(report, indent=2, default=str))
         return 0
     finally:
         close_all()
