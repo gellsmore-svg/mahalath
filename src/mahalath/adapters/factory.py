@@ -65,6 +65,15 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
             base_url=resolve_base_url(config.runtime.ollama_base_url),
             embedding_model=config.runtime.embedding_model,
         )
+    if name == "ollama_http":
+        from mahalath.adapters.ollama_http import OllamaHttpAdapter
+
+        return OllamaHttpAdapter(
+            base_url=resolve_base_url(config.runtime.ollama_base_url),
+            default_model=config.runtime.model,
+            default_timeout_seconds=config.runtime.ollama_timeout_seconds,
+            embedding_model=config.runtime.embedding_model,
+        )
     if name == "claude_api":
         from mahalath.adapters.claude_api import ClaudeApiAdapter
         return ClaudeApiAdapter()
@@ -93,5 +102,5 @@ def make_adapter(name: str, config: AppConfig) -> Adapter:
             redis_results_stream=h.redis_results_stream,
         )
     raise AdapterError(
-        f"Unknown adapter {name!r}. Supported: mock, ollama_cli, claude_api, hoglah."
+        f"Unknown adapter {name!r}. Supported: mock, ollama_cli, ollama_http, claude_api, hoglah."
     )

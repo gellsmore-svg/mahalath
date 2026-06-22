@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ollama_http` adapter** (`model_adapter = "ollama_http"`): talks to Ollama purely
+  over HTTP (`/api/generate` + `/api/embed`), no `ollama` binary on PATH required —
+  the portable counterpart to `ollama_cli`. Validated live (generate + 1024-dim
+  embeddings).
 - `mahalath migrate` — a consolidated, ordered, **idempotent** schema-migration
   command with a `schema_migrations` ledger, replacing the scattered
   `backfill-*` one-shots (which remain as legacy aliases). Supports `--status`
