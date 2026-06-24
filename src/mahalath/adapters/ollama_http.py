@@ -31,7 +31,11 @@ def _post_json(url: str, payload: dict, *, timeout: int) -> dict:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdapterError(f"Ollama returned malformed JSON from {url}: {exc}") from exc
 
 
 class OllamaHttpAdapter:

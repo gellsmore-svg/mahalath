@@ -13,6 +13,40 @@ def _adapter():
     return OllamaHttpAdapter(base_url="http://h:11434/", default_model="m", embedding_model="e")
 
 
+def test_post_json_normalizes_malformed_success_response(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"not-json"
+
+    monkeypatch.setattr(ollama_http.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+    with pytest.raises(AdapterError, match="malformed JSON"):
+        ollama_http._post_json("http://h/api/generate", {}, timeout=1)
+
+
+def test_post_json_normalizes_invalid_utf8(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"\xff"
+
+    monkeypatch.setattr(ollama_http.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+    with pytest.raises(AdapterError, match="malformed JSON"):
+        ollama_http._post_json("http://h/api/embed", {}, timeout=1)
+
+
 def test_generate_parses_response_and_passes_format(monkeypatch):
     seen = {}
 
