@@ -13,6 +13,7 @@ authors = [
     {name = "gellsmore-svg"},
 ]
 dependencies = [
+    "keturah>=0.1",  # LLM-interface manifest (build_manifest / to_mcp)
     "pymongo>=4.6",
     "pydantic>=2.6",
     "pyyaml>=6.0",
@@ -27,12 +28,12 @@ dev = [
 ]
 # Route LLM calls through a Hoglah queue daemon (model_adapter = "hoglah").
 hoglah = [
-    "hoglah>=0.3.0",
+    "hoglah>=0.8.0",
 ]
 # Route through Hoglah over a messaging broker (runtime.hoglah.transport).
-hoglah-kafka = ["hoglah>=0.3.0", "confluent-kafka>=2.3"]
-hoglah-rabbitmq = ["hoglah>=0.3.0", "pika>=1.3"]
-hoglah-redis = ["hoglah>=0.3.0", "redis>=5.0"]
+hoglah-kafka = ["hoglah>=0.8.0", "confluent-kafka>=2.3"]
+hoglah-rabbitmq = ["hoglah>=0.8.0", "pika>=1.3"]
+hoglah-redis = ["hoglah>=0.8.0", "redis>=5.0"]
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
