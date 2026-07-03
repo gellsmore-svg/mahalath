@@ -37,6 +37,7 @@ from uuid import uuid4
 from mahalath.adapters.base import Adapter, AdapterError
 from mahalath.config import RuntimeConfig
 from mahalath.db.models import AgentExchange, DebateMessage
+from mahalath.tracing import DEBATE_COMPLETED, get_witness
 
 PRECISION_CRITIC = "precision_critic"
 SYNTHESIS_EXPLORER = "synthesis_explorer"
@@ -165,7 +166,7 @@ def run_debate(
         last_context_name = se_opinion.context_name
 
         if min_confidence >= runtime.confidence_threshold:
-            return DebateResult(
+            return _witnessed(DebateResult(
                 decision_log_id=decision_log_id,
                 term=term,
                 source_document_id=source_document_id,
@@ -177,10 +178,10 @@ def run_debate(
                 final_context_name=last_context_name,
                 messages=messages,
                 exchanges=exchanges,
-            )
+            ))
 
     # Iteration cap reached without convergence.
-    return DebateResult(
+    return _witnessed(DebateResult(
         decision_log_id=decision_log_id,
         term=term,
         source_document_id=source_document_id,
@@ -192,7 +193,25 @@ def run_debate(
         final_context_name=last_context_name,
         messages=messages,
         exchanges=exchanges,
+    ))
+
+
+def _witnessed(result: DebateResult) -> DebateResult:
+    """Testify the debate outcome onto the Galeed spine (no-op unless enabled)."""
+    get_witness().emit(
+        DEBATE_COMPLETED,
+        trace_id=result.decision_log_id,
+        summary=(
+            f"debate on '{result.term}' → {result.outcome} "
+            f"after {result.iterations_used} iteration(s)"
+        ),
+        term=result.term,
+        outcome=result.outcome,
+        iterations=result.iterations_used,
+        confidence=result.final_confidence,
+        document_id=result.source_document_id,
     )
+    return result
 
 
 # --- Prompt builders ---------------------------------------------------------

@@ -35,6 +35,7 @@ from pymongo.database import Database
 from mahalath.config import AppConfig
 from mahalath.db.models import DocumentRecord
 from mahalath.db.repositories import DocumentRepository
+from mahalath.tracing import DOCUMENT_INGESTED, get_witness
 
 
 class IngestionError(Exception):
@@ -131,6 +132,15 @@ def ingest_one(
     docs.insert(record)
 
     log_path = _write_activity_log(logs_dir, record, source_path, archive_path)
+
+    get_witness().emit(
+        DOCUMENT_INGESTED,
+        trace_id=record.document_id,
+        summary=f"ingested '{record.title}' ({record.char_count} chars)",
+        document_id=record.document_id,
+        title=record.title,
+        char_count=record.char_count,
+    )
 
     return IngestionResult(
         duplicate=False,

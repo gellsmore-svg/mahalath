@@ -166,12 +166,24 @@ class RemConfig(BaseModel):
     cron: str = "0 2 * * *"
 
 
+class GaleedConfig(BaseModel):
+    """Family trace spine (Galeed) emission. Off by default; when enabled,
+    pipeline lifecycle events (document ingested, debate completed, proposal
+    decided) are witnessed into the shared trace_events collection — the
+    database the family trace API (Tirzah /api/trace, Mizpah) reads."""
+
+    enabled: bool = False
+    uri: str = "mongodb://localhost:27017"
+    database: str = "mnemosyne_dev"
+
+
 class AppConfig(BaseModel):
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     rem: RemConfig = Field(default_factory=RemConfig)
+    galeed: GaleedConfig = Field(default_factory=GaleedConfig)
 
 
 # Env-var → (section, key) overrides, applied on top of the YAML (and even with no
@@ -187,6 +199,10 @@ _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     # queue paths default to ~/.hoglah/* — matching the daemon's defaults.
     "MAHALATH_MODEL_ADAPTER": ("runtime", "model_adapter"),
     "MAHALATH_EMBEDDING_MODEL": ("runtime", "embedding_model"),
+    # Galeed spine emission, togglable by Noa without a config file.
+    "MAHALATH_GALEED_ENABLED": ("galeed", "enabled"),
+    "MAHALATH_GALEED_MONGO_URI": ("galeed", "uri"),
+    "MAHALATH_GALEED_MONGO_DB": ("galeed", "database"),
 }
 
 

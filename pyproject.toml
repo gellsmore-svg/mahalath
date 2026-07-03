@@ -34,6 +34,8 @@ hoglah = [
 hoglah-kafka = ["hoglah>=0.8.0", "confluent-kafka>=2.3"]
 hoglah-rabbitmq = ["hoglah>=0.8.0", "pika>=1.3"]
 hoglah-redis = ["hoglah>=0.8.0", "redis>=5.0"]
+# Emit pipeline lifecycle events onto the family trace spine (galeed.enabled).
+galeed = ["galeed>=0.1"]
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",

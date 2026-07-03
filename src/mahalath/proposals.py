@@ -53,6 +53,12 @@ from mahalath.db.repositories import (
     OntologyTreeRepository,
 )
 from mahalath.paths import propagate_paths
+from mahalath.tracing import (
+    PROPOSAL_ACCEPTED,
+    PROPOSAL_REJECTED,
+    PROPOSAL_ROLLED_BACK,
+    get_witness,
+)
 
 
 class ProposalError(Exception):
@@ -134,6 +140,14 @@ def accept_proposal(
             }
         },
     )
+    get_witness().emit(
+        PROPOSAL_ACCEPTED,
+        trace_id=proposal_id,
+        summary=f"accepted {proposal.action_type} proposal",
+        proposal_id=proposal_id,
+        action_type=proposal.action_type,
+        decided_via=decided_via,
+    )
     return OperatorActionResult(
         proposal_id=proposal_id,
         previous_status="pending_review",
@@ -165,6 +179,14 @@ def reject_proposal(
                 "operator_note": note,
             }
         },
+    )
+    get_witness().emit(
+        PROPOSAL_REJECTED,
+        trace_id=proposal_id,
+        summary=f"rejected {proposal.action_type} proposal",
+        proposal_id=proposal_id,
+        action_type=proposal.action_type,
+        decided_via=decided_via,
     )
     return OperatorActionResult(
         proposal_id=proposal_id,
@@ -216,6 +238,14 @@ def rollback_proposal(
                 "application_result": new_application_result,
             }
         },
+    )
+    get_witness().emit(
+        PROPOSAL_ROLLED_BACK,
+        trace_id=proposal_id,
+        summary=f"rolled back {proposal.action_type} proposal",
+        proposal_id=proposal_id,
+        action_type=proposal.action_type,
+        decided_via=decided_via,
     )
     return OperatorActionResult(
         proposal_id=proposal_id,
