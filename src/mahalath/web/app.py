@@ -46,66 +46,144 @@ from mahalath.proposals import (
 
 
 _CSS = """
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
-       max-width: 1100px; margin: 1.5em auto; padding: 0 1em; line-height: 1.5;
-       color: #222; background: #fafafa; }
-.chatform textarea { width: 100%; padding: 0.6em; font-size: 1em; border: 1px solid #bbb; border-radius: 4px; box-sizing: border-box; }
-.chatform button { margin-top: 0.6em; }
-.chatresult { margin-top: 1.5em; }
-.chatanswer { background: white; padding: 1em 1.3em; border: 1px solid #ddd; border-radius: 6px; line-height: 1.5; }
-.chatmeta { font-size: 0.85em; color: #666; margin-top: 0.5em; }
-.chatmeta a { color: #0a58ca; }
-header nav { margin-bottom: 1.5em; padding-bottom: 0.7em; border-bottom: 1px solid #ddd; }
-header nav a { margin-right: 1em; color: #0a58ca; text-decoration: none; font-weight: 500; }
-header nav a:hover { text-decoration: underline; }
-h1, h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3em; }
-table { border-collapse: collapse; width: 100%; margin: 1em 0; background: white; }
-th, td { text-align: left; padding: 0.55em 0.7em; border-bottom: 1px solid #eee; vertical-align: top; }
-th { background: #f0f1f4; font-weight: 600; }
-tr:hover td { background: #fafafa; }
-code { background: #eef0f3; padding: 0.1em 0.4em; border-radius: 3px;
-       font-family: ui-monospace, SF Mono, Menlo, monospace; font-size: 0.92em; }
-.badge { display: inline-block; padding: 0.1em 0.55em; border-radius: 10px; font-size: 0.8em;
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --ink: #1c2128; --muted: #667085;
+  --line: #e3e6ea; --line-soft: #edf0f3; --accent: #2f5fd0; --accent-soft: #e8eefc;
+  --ok-bg: #d9f0e1; --ok-ink: #14572c; --warn-bg: #fdf1cf; --warn-ink: #755600;
+  --bad-bg: #fadbde; --bad-ink: #82202b; --info-bg: #d8ecf3; --info-ink: #0c5460;
+  --neutral-bg: #e6e8eb; --neutral-ink: #3d434b;
+  --frame-bg: #e9e2f7; --frame-ink: #4b2e83;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --surface: #1a1e26; --ink: #e5e8ee; --muted: #97a0af;
+    --line: #2a3039; --line-soft: #232833; --accent: #7c9cff; --accent-soft: #232c45;
+    --ok-bg: #14361f; --ok-ink: #7edc9f; --warn-bg: #3a3212; --warn-ink: #ecd07a;
+    --bad-bg: #43191e; --bad-ink: #ff9aa4; --info-bg: #123340; --info-ink: #8ed3ea;
+    --neutral-bg: #262c36; --neutral-ink: #b6bec9;
+    --frame-bg: #2c2444; --frame-ink: #c3b1ee;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+       margin: 0; line-height: 1.55; color: var(--ink); background: var(--bg);
+       font-size: 15px; }
+main { max-width: 1100px; margin: 0 auto; padding: 1.2em 1.2em 3em; }
+a { color: var(--accent); }
+h1 { font-size: 1.5em; margin: 0.6em 0 0.5em; letter-spacing: -0.01em; }
+h2 { font-size: 1.08em; margin: 1.6em 0 0.5em; text-transform: uppercase;
+     letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+header { position: sticky; top: 0; z-index: 10; background: var(--surface);
+         border-bottom: 1px solid var(--line); }
+header nav { max-width: 1100px; margin: 0 auto; padding: 0.55em 1.2em;
+             display: flex; align-items: center; gap: 0.25em; flex-wrap: wrap; }
+.brand { font-weight: 700; margin-right: 0.8em; color: var(--ink); text-decoration: none;
+         letter-spacing: -0.01em; }
+header nav a.navlink { color: var(--muted); text-decoration: none; font-weight: 500;
+             padding: 0.3em 0.7em; border-radius: 999px; font-size: 0.94em; }
+header nav a.navlink:hover { color: var(--ink); background: var(--line-soft); }
+header nav a.navlink.active { color: var(--accent); background: var(--accent-soft); }
+.dbname { margin-left: auto; color: var(--muted); font-size: 0.85em;
+          font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; background: var(--surface);
+        border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+        box-shadow: var(--shadow); }
+th, td { text-align: left; padding: 0.6em 0.8em; border-bottom: 1px solid var(--line-soft);
+         vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+th { background: var(--line-soft); font-weight: 600; font-size: 0.85em;
+     text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+tr:hover td { background: var(--line-soft); }
+@media (max-width: 720px) { table { display: block; overflow-x: auto; } }
+code { background: var(--line-soft); padding: 0.1em 0.4em; border-radius: 4px;
+       font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
+.badge { display: inline-block; padding: 0.12em 0.6em; border-radius: 999px; font-size: 0.78em;
          font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-.badge.applied { background: #d4edda; color: #155724; }
-.badge.pending_review { background: #fff3cd; color: #856404; }
-.badge.rejected { background: #f8d7da; color: #721c24; }
-.badge.invalid { background: #d1ecf1; color: #0c5460; }
-.badge.rolled_back { background: #e2e3e5; color: #383d41; }
+.badge.applied { background: var(--ok-bg); color: var(--ok-ink); }
+.badge.pending_review { background: var(--warn-bg); color: var(--warn-ink); }
+.badge.rejected { background: var(--bad-bg); color: var(--bad-ink); }
+.badge.invalid { background: var(--info-bg); color: var(--info-ink); }
+.badge.rolled_back { background: var(--neutral-bg); color: var(--neutral-ink); }
+.badge.frame { background: var(--frame-bg); color: var(--frame-ink); }
+.badge.untagged { background: transparent; color: var(--muted); border: 1px dashed var(--muted); }
+.badge.intent { background: var(--ok-bg); color: var(--ok-ink); margin-right: 0.3em; }
+.badge.intentionality { background: var(--warn-bg); color: var(--warn-ink); }
+.meter { display: inline-flex; align-items: center; gap: 0.5em; white-space: nowrap; }
+.meter .track { width: 3.2em; height: 6px; border-radius: 999px; background: var(--line);
+                overflow: hidden; display: inline-block; }
+.meter .fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.meter .val { font-size: 0.88em; font-variant-numeric: tabular-nums; color: var(--muted); }
 form.inline { display: inline-block; margin: 0.3em 0.3em 0.3em 0; }
-form.inline input[type=text] { padding: 0.3em 0.5em; border: 1px solid #bbb; border-radius: 3px;
-                                width: 22em; }
-button { padding: 0.4em 1em; cursor: pointer; border: 1px solid #888; background: white;
-         border-radius: 3px; }
-button.accept { border-color: #28a745; color: #155724; }
-button.reject { border-color: #dc3545; color: #721c24; }
-button.rollback { border-color: #6c757d; color: #444; }
-.definition { font-style: italic; background: #fff; border-left: 4px solid #0a58ca;
-              padding: 0.7em 1em; margin: 0.6em 0; border-radius: 0 4px 4px 0; }
-.attribution { font-size: 0.85em; color: #555; margin-top: 0.2em; }
-.reason { font-size: 0.95em; background: #fff; padding: 0.5em 0.8em; border-left: 3px solid #ccc;
-          margin: 0.4em 0; }
-.muted { color: #888; }
+form.inline input[type=text] { padding: 0.45em 0.65em; border: 1px solid var(--line);
+                                border-radius: 8px; width: 22em; background: var(--surface);
+                                color: var(--ink); }
+form.inline input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+button { padding: 0.45em 1.1em; cursor: pointer; border: 1px solid var(--line);
+         background: var(--surface); color: var(--ink); border-radius: 8px; font: inherit;
+         font-size: 0.94em; font-weight: 500; }
+button:hover { border-color: var(--muted); }
+button.accept { border-color: var(--ok-ink); color: var(--ok-ink); background: var(--ok-bg); }
+button.reject { border-color: var(--bad-ink); color: var(--bad-ink); background: var(--bad-bg); }
+button.rollback { border-color: var(--muted); color: var(--muted); }
+.chatform textarea { width: 100%; padding: 0.7em; font-size: 1em; border: 1px solid var(--line);
+                     border-radius: 10px; box-sizing: border-box; background: var(--surface);
+                     color: var(--ink); resize: vertical; }
+.chatform textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.chatform button { margin-top: 0.6em; background: var(--accent); color: #fff;
+                   border-color: var(--accent); }
+.chatresult { margin-top: 1.5em; }
+.chatanswer { background: var(--surface); padding: 1em 1.3em; border: 1px solid var(--line);
+              border-radius: 10px; line-height: 1.55; box-shadow: var(--shadow); }
+.chatmeta { font-size: 0.85em; color: var(--muted); margin-top: 0.5em; }
+.definition { font-style: italic; background: var(--surface); border-left: 4px solid var(--accent);
+              padding: 0.7em 1em; margin: 0.6em 0; border-radius: 0 8px 8px 0; }
+.attribution { font-size: 0.85em; color: var(--muted); margin-top: 0.2em; }
+.reason { font-size: 0.95em; background: var(--surface); padding: 0.6em 0.9em;
+          border-left: 3px solid var(--line); margin: 0.4em 0; border-radius: 0 8px 8px 0; }
+.muted { color: var(--muted); }
 .ctxgroup { margin: 0.6em 0 1.4em; }
 .ctxhead { display: flex; align-items: baseline; gap: 0.6em; flex-wrap: wrap; margin: 0.2em 0; }
-.ctxdesc { font-size: 0.85em; color: #555; }
-.badge.frame { background: #e7e0f5; color: #4b2e83; }
-.badge.untagged { background: #f3f3f3; color: #777; border: 1px dashed #bbb; }
-.badge.intent { background: #e0f0e3; color: #1e5631; margin-right: 0.3em; }
-.badge.intentionality { background: #fdf2dc; color: #7a5c00; }
-.intents { font-size: 0.85em; color: #555; margin: 0.2em 0 0.6em; }
-.polysemy { font-size: 0.9em; color: #4b2e83; background: #f6f2fd;
-            border-left: 3px solid #b9a6e0; padding: 0.5em 0.8em; margin: 0.4em 0; }
+.ctxdesc { font-size: 0.85em; color: var(--muted); }
+.intents { font-size: 0.85em; color: var(--muted); margin: 0.2em 0 0.6em; }
+.polysemy { font-size: 0.9em; color: var(--frame-ink); background: var(--frame-bg);
+            border-left: 3px solid var(--frame-ink); padding: 0.5em 0.8em; margin: 0.4em 0;
+            border-radius: 0 8px 8px 0; }
 .kvbox th { width: 12em; }
-.summary { display: flex; gap: 1em; flex-wrap: wrap; }
-.summary .card { background: white; border: 1px solid #ddd; border-radius: 6px;
-                  padding: 1em 1.3em; min-width: 7em; }
-.summary .card .n { font-size: 2em; font-weight: 700; line-height: 1; }
-.summary .card .label { font-size: 0.85em; color: #555; margin-top: 0.2em; }
+.summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+           gap: 0.8em; }
+.summary .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+                 padding: 1em 1.2em; box-shadow: var(--shadow); text-decoration: none;
+                 color: inherit; display: block; }
+a.card:hover { border-color: var(--accent); }
+.summary .card .n { font-size: 1.9em; font-weight: 700; line-height: 1.15;
+                    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.summary .card .label { font-size: 0.83em; color: var(--muted); margin-top: 0.15em; }
+.chips { display: inline-flex; gap: 0.4em; flex-wrap: wrap; }
+.chips a { text-decoration: none; padding: 0.2em 0.75em; border-radius: 999px;
+           border: 1px solid var(--line); color: var(--muted); font-size: 0.9em;
+           background: var(--surface); }
+.chips a:hover { color: var(--ink); border-color: var(--muted); }
 """
 
+_NAV_ITEMS = [
+    ("Dashboard", "/"),
+    ("Ontology", "/ontology"),
+    ("Pending", "/proposals?status=pending_review"),
+    ("All proposals", "/proposals"),
+    ("Undecided", "/undecided"),
+    ("Documents", "/documents"),
+    ("Effectiveness", "/effectiveness"),
+    ("Chat", "/chat"),
+]
 
-def _base(title: str, body: str, database: str) -> str:
+
+def _base(title: str, body: str, database: str, active: str = "") -> str:
+    links = "".join(
+        f'<a class="navlink{" active" if href == active else ""}" href="{escape(href)}">{escape(label)}</a>'
+        for label, href in _NAV_ITEMS
+    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -117,20 +195,26 @@ def _base(title: str, body: str, database: str) -> str:
 <body>
 <header>
   <nav>
-    <a href="/">Dashboard</a>
-    <a href="/ontology">Ontology</a>
-    <a href="/proposals?status=pending_review">Pending</a>
-    <a href="/proposals">All proposals</a>
-    <a href="/undecided">Undecided</a>
-    <a href="/documents">Documents</a>
-    <a href="/effectiveness">Effectiveness</a>
-    <a href="/chat">Chat</a>
-    <span class="muted" style="float:right">{escape(database)}</span>
+    <a class="brand" href="/">Mahalath</a>
+    {links}
+    <span class="dbname">{escape(database)}</span>
   </nav>
 </header>
+<main>
 {body}
+</main>
 </body>
 </html>"""
+
+
+def _conf(value: float) -> str:
+    """Confidence as a small inline meter with the numeric value."""
+    width = max(0, min(100, round(value * 100)))
+    return (
+        f'<span class="meter"><span class="track">'
+        f'<span class="fill" style="width:{width}%"></span></span>'
+        f'<span class="val">{value:.1f}</span></span>'
+    )
 
 
 def _iso(value: Any) -> str:
@@ -182,14 +266,14 @@ def _register_routes(app: FastAPI) -> None:
             "reviews": db.ontology_reviews.count_documents({}),
         }
         cards = "".join(
-            f'<div class="card"><div class="n">{n}</div><div class="label">{escape(label)}</div></div>'
-            for label, n in [
-                ("ontology entries", counts["entries"]),
-                ("pending proposals", counts["pending"]),
-                ("applied proposals", counts["applied"]),
-                ("undecided queue", counts["undecided"]),
-                ("documents", counts["documents"]),
-                ("hierarchy reviews", counts["reviews"]),
+            f'<a class="card" href="{escape(href)}"><div class="n">{n}</div><div class="label">{escape(label)}</div></a>'
+            for label, n, href in [
+                ("ontology entries", counts["entries"], "/ontology"),
+                ("pending proposals", counts["pending"], "/proposals?status=pending_review"),
+                ("applied proposals", counts["applied"], "/proposals?status=applied"),
+                ("undecided queue", counts["undecided"], "/undecided"),
+                ("documents", counts["documents"], "/documents"),
+                ("hierarchy reviews", counts["reviews"], "/effectiveness"),
             ]
         )
         body = f"""
@@ -202,7 +286,7 @@ def _register_routes(app: FastAPI) -> None:
   <code>ontology/glossary.{{md,json}}</code> after every change.
 </p>
 """
-        return _base("Dashboard", body, config.mongo.database)
+        return _base("Dashboard", body, config.mongo.database, active="/")
 
     @app.get("/ontology", response_class=HTMLResponse)
     def ontology_list(request: Request) -> str:
@@ -230,7 +314,7 @@ def _register_routes(app: FastAPI) -> None:
 <tr>
   <td><a href="/ontology/{escape(entry.mpl_label)}"><code>{escape(entry.mpl_label)}</code></a></td>
   <td>{escape(entry.canonical_term)}</td>
-  <td>{entry.confidence:.1f}</td>
+  <td>{_conf(entry.confidence)}</td>
   <td>{parent}</td>
   <td>{len(children)}</td>
   <td>{contexts_cell}</td>
@@ -248,7 +332,7 @@ def _register_routes(app: FastAPI) -> None:
 {''.join(rows) or '<tr><td colspan="6" class="muted">(no entries yet)</td></tr>'}
 </table>
 """
-        return _base("Ontology", body, config.mongo.database)
+        return _base("Ontology", body, config.mongo.database, active="/ontology")
 
     @app.get("/ontology/{mpl_label}", response_class=HTMLResponse)
     def ontology_detail(request: Request, mpl_label: str) -> str:
@@ -342,7 +426,7 @@ def _register_routes(app: FastAPI) -> None:
 {polysemy_html}
 {defs_html}
 """
-        return _base(f"{entry.mpl_label}", body, config.mongo.database)
+        return _base(f"{entry.mpl_label}", body, config.mongo.database, active="/ontology")
 
     @app.get("/proposals", response_class=HTMLResponse)
     def proposals_list(request: Request, status: str | None = None) -> str:
@@ -358,7 +442,7 @@ def _register_routes(app: FastAPI) -> None:
   <td><a href="/proposals/{escape(p.proposal_id)}"><code>{escape(p.proposal_id[:8])}…</code></a></td>
   <td><code>{escape(p.action_type)}</code></td>
   <td><code>{escape(payload_str)}</code></td>
-  <td>{p.confidence:.1f}</td>
+  <td>{_conf(p.confidence)}</td>
   <td><span class="badge {escape(p.status)}">{escape(p.status)}</span></td>
   <td>{_iso(p.created_at)}</td>
 </tr>""")
@@ -371,19 +455,20 @@ def _register_routes(app: FastAPI) -> None:
             ("invalid", "/proposals?status=invalid"),
             ("rolled_back", "/proposals?status=rolled_back"),
         ]
-        chips_html = " · ".join(
+        chips_html = "".join(
             f'<a href="{href}">{label}</a>' for label, href in filter_chips
         )
 
         body = f"""
 <h1>Proposals <span class="muted">({len(rows)})</span></h1>
-<p>{chips_html}</p>
+<p class="chips">{chips_html}</p>
 <table>
 <tr><th>ID</th><th>Type</th><th>Payload</th><th>Conf</th><th>Status</th><th>Created</th></tr>
 {''.join(rows) or '<tr><td colspan="6" class="muted">(no proposals)</td></tr>'}
 </table>
 """
-        return _base("Proposals", body, config.mongo.database)
+        active_nav = "/proposals?status=pending_review" if status == "pending_review" else "/proposals"
+        return _base("Proposals", body, config.mongo.database, active=active_nav)
 
     @app.get("/proposals/{proposal_id}", response_class=HTMLResponse)
     def proposal_detail(request: Request, proposal_id: str) -> str:
@@ -455,7 +540,7 @@ def _register_routes(app: FastAPI) -> None:
 {application_html}
 {actions}
 """
-        return _base(f"Proposal {p.proposal_id[:8]}", body, config.mongo.database)
+        return _base(f"Proposal {p.proposal_id[:8]}", body, config.mongo.database, active="/proposals")
 
     @app.post("/proposals/{proposal_id}/accept")
     def proposal_accept(
@@ -519,7 +604,7 @@ def _register_routes(app: FastAPI) -> None:
 {''.join(rows) or '<tr><td colspan="6" class="muted">(queue is empty)</td></tr>'}
 </table>
 """
-        return _base("Undecided", body, config.mongo.database)
+        return _base("Undecided", body, config.mongo.database, active="/undecided")
 
     @app.get("/effectiveness", response_class=HTMLResponse)
     def effectiveness_page(request: Request) -> str:
@@ -608,7 +693,7 @@ calibrated.</p>
 {c.definitions} definitions ({c.frame_tagged} frame-tagged,
 {c.intent_annotated} intent-annotated) · {c.stale_entries} stale</p>
 """
-        return _base("Effectiveness", body, config.mongo.database)
+        return _base("Effectiveness", body, config.mongo.database, active="/effectiveness")
 
     @app.get("/api/effectiveness")
     def effectiveness_api(request: Request) -> JSONResponse:
@@ -707,7 +792,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
 });
 </script>
 """
-        return _base("Chat", body, config.mongo.database)
+        return _base("Chat", body, config.mongo.database, active="/chat")
 
     @app.post("/api/chat")
     def chat_api(
@@ -915,4 +1000,4 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
 {''.join(rows) or '<tr><td colspan="6" class="muted">(no documents)</td></tr>'}
 </table>
 """
-        return _base("Documents", body, config.mongo.database)
+        return _base("Documents", body, config.mongo.database, active="/documents")
