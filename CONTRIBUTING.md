@@ -18,6 +18,9 @@ are committed via `.gitkeep`, their contents are not).
 
 ## Running tests
 
+Integration tests need a MongoDB server on `localhost:27017` (for example
+`docker run -d -p 27017:27017 mongo:8.0`).
+
 ```bash
 pytest
 ```

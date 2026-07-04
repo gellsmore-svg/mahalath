@@ -35,7 +35,7 @@ from mahalath.db.repositories import (
     UndecidedQueueRepository,
 )
 
-from tests.conftest import TEST_DB_NAME
+from conftest import TEST_DB_NAME
 
 
 def _ts(minute: int) -> datetime:
