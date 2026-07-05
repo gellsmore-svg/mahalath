@@ -159,6 +159,9 @@ class HoglahRoutingConfig(BaseModel):
 class IngestionConfig(BaseModel):
     poll_interval_seconds: int = 60
     duplicate_rejection: str = "sha256"
+    # Terms debated per document on autonomous (scheduler) ingestion. The CLI
+    # flag --max-terms-per-doc still overrides for manual runs.
+    max_terms_per_doc: int = 1
 
 
 class RemConfig(BaseModel):

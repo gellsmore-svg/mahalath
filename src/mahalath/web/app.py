@@ -722,6 +722,11 @@ calibrated.</p>
 </form>
 <div id="answer" class="chatresult"></div>
 <script>
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
 document.getElementById('chat-form').addEventListener('submit', async function(e) {
   e.preventDefault();
   const q = document.querySelector('textarea[name=question]').value;
@@ -735,11 +740,11 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
     });
     const data = await r.json();
     if (!r.ok) {
-      document.getElementById('answer').innerHTML = '<p style="color:#a00">' + (data.detail || 'error') + '</p>';
+      document.getElementById('answer').innerHTML = '<p style="color:#a00">' + esc(data.detail || 'error') + '</p>';
       return;
     }
-    const cited = (data.cited_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
-    const ctx = (data.context_labels || []).map(l => '<a href="/ontology/' + l + '"><code>' + l + '</code></a>').join(', ');
+    const cited = (data.cited_labels || []).map(l => '<a href="/ontology/' + encodeURIComponent(l) + '"><code>' + esc(l) + '</code></a>').join(', ');
+    const ctx = (data.context_labels || []).map(l => '<a href="/ontology/' + encodeURIComponent(l) + '"><code>' + esc(l) + '</code></a>').join(', ');
     let actionsHtml = '';
     if ((data.suggested_actions || []).length > 0) {
       actionsHtml = '<h2>Suggested actions</h2>';
@@ -747,8 +752,8 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
         const payloadDesc = Object.entries(a.payload || {}).map(([k, v]) => k + '=' + JSON.stringify(v)).join(', ');
         actionsHtml +=
           '<div class="chatanswer" style="border-left: 4px solid #f0ad4e">' +
-          '<strong>' + a.type + '</strong> (' + a.confidence.toFixed(1) + ' conf): <code>' + payloadDesc + '</code>' +
-          '<p class="chatmeta">' + a.reasoning + '</p>' +
+          '<strong>' + esc(a.type) + '</strong> (' + a.confidence.toFixed(1) + ' conf): <code>' + esc(payloadDesc) + '</code>' +
+          '<p class="chatmeta">' + esc(a.reasoning) + '</p>' +
           '<button class="accept" data-idx="' + i + '">Apply</button>' +
           ' <button class="reject" data-idx="' + i + '">Discard</button>' +
           '<div class="chatmeta apply-result" id="apply-result-' + i + '"></div>' +
@@ -757,10 +762,10 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
     }
     document.getElementById('answer').innerHTML =
       '<h2>Answer</h2>' +
-      '<div class="chatanswer">' + data.answer.replace(/\\n\\n/g, '</p><p>').replace(/\\n/g, '<br>') + '</div>' +
+      '<div class="chatanswer">' + esc(data.answer).replace(/\\n\\n/g, '</p><p>').replace(/\\n/g, '<br>') + '</div>' +
       '<p class="chatmeta">Cited: ' + (cited || '<em>none</em>') + '</p>' +
       '<p class="chatmeta">Context entries: ' + (ctx || '<em>none</em>') + '</p>' +
-      '<p class="chatmeta"><em>' + data.duration_ms + 'ms · ' + data.model_used + '</em></p>' +
+      '<p class="chatmeta"><em>' + esc(data.duration_ms) + 'ms · ' + esc(data.model_used) + '</em></p>' +
       actionsHtml;
     document.querySelectorAll('button.accept').forEach(btn => {
       btn.addEventListener('click', async function() {
@@ -773,8 +778,8 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
         });
         const aData = await ar.json();
         document.getElementById('apply-result-' + idx).innerHTML =
-          ar.ok ? ('<strong>' + aData.status + '</strong>: ' + aData.detail + ' (proposal ' + aData.proposal_id.slice(0, 8) + '…)')
-                : ('<span style="color:#a00">error: ' + (aData.detail || ar.status) + '</span>');
+          ar.ok ? ('<strong>' + esc(aData.status) + '</strong>: ' + esc(aData.detail) + ' (proposal ' + esc(aData.proposal_id.slice(0, 8)) + '…)')
+                : ('<span style="color:#a00">error: ' + esc(aData.detail || ar.status) + '</span>');
         btn.disabled = true;
       });
     });
@@ -787,7 +792,7 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
       });
     });
   } catch (err) {
-    document.getElementById('answer').innerHTML = '<p style="color:#a00">network error: ' + err + '</p>';
+    document.getElementById('answer').innerHTML = '<p style="color:#a00">network error: ' + esc(err) + '</p>';
   }
 });
 </script>
@@ -938,7 +943,13 @@ document.getElementById('chat-form').addEventListener('submit', async function(e
         db = get_database(config)
         atype = str(payload.get("type", "")).strip()
         action_payload = payload.get("payload") or {}
-        confidence = float(payload.get("confidence", 0.0))
+        try:
+            confidence = float(payload.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        # Client-supplied — clamp to the valid scale so a forged request
+        # cannot inflate its way past validation elsewhere.
+        confidence = max(0.0, min(confidence, config.runtime.confidence_scale_max))
         reasoning = str(payload.get("reasoning", "")).strip() or (
             "operator confirmed via chat"
         )

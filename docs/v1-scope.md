@@ -54,7 +54,7 @@ Ollama install, with no required external API.
 
 ## Release checklist (to execute when cutting v1.0.0)
 
-- [x] All tests green; live MongoDB round-trips pass. (437 passing.)
+- [x] All tests green; live MongoDB round-trips pass. (471 passing as of 1.1.0; the 437 figure was the v1.0.0 cut.)
 - [x] `mahalath init` verified on a clean database (collections, indexes,
       taxonomies) — the documented fresh-install path.
 - [x] **Live embedding verification**: `bge-m3` pulled; `backfill-embeddings
@@ -68,7 +68,7 @@ Ollama install, with no required external API.
       process → mappings → serve), incl. the WSL embedding note.
 - [x] `config.example.yaml` carries the embedding + candidate-source knobs.
 - [x] Version bumped to `1.0.0` in `pyproject.toml`.
-- [ ] Git tag `v1.0.0` (operator-gated — left for the operator to cut).
+- [ ] Git tag `v1.0.0` (operator-gated — left for the operator to cut). Current version: 1.1.0.
 - [x] `.restart.md` updated to mark v1 closed and v2 candidates carried.
 
 ## Known limitations (accepted for v1)

@@ -67,6 +67,13 @@ def rem_review(
     pending = queue.list_pending(limit=max(max_items * 4, 32))
     result = RemReviewResult(items_pending_at_start=len(pending))
 
+
+    from mahalath.db.repositories import DefinitionContextRepository
+
+    available_contexts = [
+        {"name": c.name, "description": c.description}
+        for c in DefinitionContextRepository(db).all()
+    ]
     for item in pending:
         if result.items_reviewed >= max_items:
             break
@@ -90,6 +97,7 @@ def rem_review(
                 adapter=adapter,
                 runtime=config.runtime,
                 style_overlay=overlay,
+                available_contexts=available_contexts or None,
             )
         except DebateError as exc:
             result.items_errored += 1

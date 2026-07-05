@@ -1,5 +1,7 @@
 # Mahalath (MPL) — Requirements Document
 
+> **Historical document** — the frozen v0.1 contract. Where shipped behaviour differs (debate iteration cap, web UI), inline notes mark it; current behaviour lives in the README and config defaults.
+
 **Version:** 0.1
 **Status:** working draft
 **Date captured:** 2026-06-06
@@ -43,7 +45,8 @@ The name "Mahalath" draws from a rare Old Testament Hebrew name associated with 
 
 - Minimum 2–3 agents of similar capability (e.g., PrecisionCritic for logic/drift detection, SynthesisExplorer for correlations/analogies, optional Moderator).
 - Agents converse iteratively on terms extracted from ingested documents.
-- Max 25 conversation iterations per term before escalating (configurable).
+- Max 25 conversation iterations per term before escalating (configurable).  
+  *(shipped default is 50 — `runtime.max_iterations_per_term`; the v0.1 number is historical)*
 - If confidence < 8.0, move to undecided queue.
 
 ### 3.3 Ingestion & Refinement
@@ -100,5 +103,6 @@ The name "Mahalath" draws from a rare Old Testament Hebrew name associated with 
 ## 7. Out of Scope (for initial version)
 
 - Full graph visualization.
-- Real-time web UI.
+- Real-time web UI.  
+  *(superseded: a full FastAPI web UI + grounded chat shipped in 1.x — this document is the frozen v0.1 contract, not current scope)*
 - Cloud execution (local-first).

@@ -95,7 +95,7 @@ def frontier_review(
 
     for proposal in pending[:max_items]:
         try:
-            prompt = build_review_prompt(proposal, db, style_overlay)
+            prompt = build_review_prompt(proposal, db, style_overlay, proposing_model=config.runtime.model)
             response = adapter.generate(prompt, want_json=True)
             verdict = parse_verdict(response.text)
         except (AdapterError, FrontierReviewError) as exc:
@@ -168,6 +168,7 @@ def build_review_prompt(
     proposal: ActionProposal,
     db: Database,
     style_overlay: str | None,
+    proposing_model: str = "the configured local model",
 ) -> str:
     """Build a context-rich prompt with both entries' definitions."""
     entries_repo = OntologyEntryRepository(db)
@@ -178,14 +179,14 @@ def build_review_prompt(
     parts.append("")
     parts.append("CONTEXT")
     parts.append(
-        "A local model (gemma4:e2b) proposed the structural action below at "
-        "a confidence that fell below the auto-apply threshold (8.0) and "
-        "got routed to operator review. Your job is to adjudicate with full "
+        f"A local model ({proposing_model}) proposed the structural action below "
+        "at a confidence that fell below the auto-apply threshold and got "
+        "routed to operator review. Your job is to adjudicate with full "
         "definitional context — something the local model lacks."
     )
     parts.append("")
     parts.append(f"ACTION TYPE: {proposal.action_type}")
-    parts.append(f"PROPOSING MODEL: gemma4:e2b")
+    parts.append(f"PROPOSING MODEL: {proposing_model}")
     parts.append(f"PROPOSING MODEL CONFIDENCE: {proposal.confidence}")
     parts.append(f"PROPOSING MODEL REASONING: {proposal.reason}")
     parts.append("")

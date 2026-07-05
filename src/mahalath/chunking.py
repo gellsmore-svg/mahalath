@@ -29,10 +29,13 @@ of context anchored in chunk K-1 is still accepted.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 from mahalath.adapters.base import Adapter
+
+log = logging.getLogger("mahalath")
 from mahalath.extraction import (
     CandidateTerm,
     DEFAULT_MAX_TERMS,
@@ -177,7 +180,8 @@ def extract_candidates_chunked(
     aggregated: list[CandidateTerm] = []
     seen: set[str] = set()
 
-    for chunk in chunks:
+    failed_chunks = 0
+    for index, chunk in enumerate(chunks):
         # build_extraction_prompt's own char_budget mustn't truncate the
         # chunk we just carefully sized to fit.
         prompt = build_extraction_prompt(
@@ -191,11 +195,16 @@ def extract_candidates_chunked(
             chunk_candidates = parse_candidates(
                 response.text, max_terms=max_terms_per_chunk
             )
-        except ExtractionError:
+        except ExtractionError as error:
             # One bad chunk should not abort the whole pipeline; the
             # caller can read the activity log and re-process. The
             # alternative — raising — would lose any candidates already
-            # gathered from earlier chunks.
+            # gathered from earlier chunks. But swallowing silently left
+            # the operator with "nothing happened" — log every failure.
+            failed_chunks += 1
+            log.warning(
+                "chunk %d/%d extraction failed: %s", index + 1, len(chunks), error
+            )
             continue
 
         for candidate in chunk_candidates:
@@ -212,4 +221,10 @@ def extract_candidates_chunked(
             if len(aggregated) >= max_total_terms:
                 return aggregated
 
+    if failed_chunks and not aggregated:
+        log.warning(
+            "all %d chunk(s) failed extraction — returning no candidates "
+            "(check the model/format; see per-chunk warnings above)",
+            failed_chunks,
+        )
     return aggregated

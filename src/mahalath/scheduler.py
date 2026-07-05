@@ -115,7 +115,7 @@ def _default_process_input(config: AppConfig) -> None:
     log.info("scheduler: process-input poll starting")
     rc = _process_input(
         config,
-        max_terms_per_doc=1,
+        max_terms_per_doc=config.ingestion.max_terms_per_doc,
         skip_hierarchy_review=False,
         consensus_passes_override=None,
     )

@@ -114,16 +114,36 @@ def accept_proposal(
             "only pending_review proposals are eligible"
         )
 
-    # The world may have moved since the proposal was made — re-validate
-    # at apply time so we don't quietly land a stale change.
-    action = _rehydrate_action(proposal)
-    validation = validate(action, db)
-    if not validation.valid:
+    # Atomic claim (compare-and-set): two concurrent accepts both pass the
+    # read above; only the one that flips pending_review → applying proceeds,
+    # so the action can never be applied twice.
+    claimed = db.action_proposals.update_one(
+        {"proposal_id": proposal_id, "status": "pending_review"},
+        {"$set": {"status": "applying"}},
+    )
+    if getattr(claimed, "modified_count", 1) == 0:
         raise ProposalError(
-            f"proposal can no longer be applied: {validation.reason}"
+            "proposal was decided concurrently; refresh and check its status"
         )
 
-    application_result = apply(action, db)
+    try:
+        # The world may have moved since the proposal was made — re-validate
+        # at apply time so we don't quietly land a stale change.
+        action = _rehydrate_action(proposal)
+        validation = validate(action, db)
+        if not validation.valid:
+            raise ProposalError(
+                f"proposal can no longer be applied: {validation.reason}"
+            )
+
+        application_result = apply(action, db)
+    except Exception:
+        # Release the claim so the proposal stays decidable.
+        db.action_proposals.update_one(
+            {"proposal_id": proposal_id, "status": "applying"},
+            {"$set": {"status": "pending_review"}},
+        )
+        raise
     now = _utcnow()
     db.action_proposals.update_one(
         {"proposal_id": proposal_id},

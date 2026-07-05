@@ -385,3 +385,38 @@ def test_api_effectiveness_returns_report(app_client, mongo_db) -> None:
     report = payload["report"]
     assert report["coverage"]["entries"] == 2
     assert "findings" in report and report["findings"]
+
+
+def test_chat_page_escapes_model_output_paths(app_client) -> None:
+    """The chat page ships an esc() helper and applies it to every dynamic
+    interpolation (answer, reasoning, labels, errors) before innerHTML."""
+    page = app_client.get("/chat").text
+    assert "function esc(" in page
+    assert "esc(data.answer)" in page
+    assert "esc(a.reasoning)" in page
+    assert "esc(data.detail || 'error')" in page
+
+
+def test_chat_apply_action_clamps_confidence(app_client, monkeypatch) -> None:
+    captured = {}
+
+    class FakeResult:
+        proposal_id = "p1"
+        status = "pending_review"
+        detail = "queued"
+        payload = {}
+
+    def fake_dispatch(action, db):
+        captured["confidence"] = action.confidence
+        return FakeResult()
+
+    import mahalath.actions as actions
+    monkeypatch.setattr(actions, "dispatch", fake_dispatch)
+    response = app_client.post("/api/chat/apply_action", json={
+        "type": "propose_alias",
+        "payload": {"label": "MPL-001", "alias": "x"},
+        "confidence": 999.0,
+        "reasoning": "r",
+    })
+    assert response.status_code == 200
+    assert captured["confidence"] <= 10.0

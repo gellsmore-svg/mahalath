@@ -224,14 +224,12 @@ def search_terms(
     text_hits = _text_search(db, " ".join(terms), language=language)
 
     scored: list[Match] = []
-    lexicon_labels = [
-        doc["_id"]
-        for doc in db.ontology_entries.find({"language": language}, {"_id": 1})
-    ]
-    for label in lexicon_labels:
-        entry = repo.get(label)
-        if entry is None:
-            continue
+    # One bulk fetch (was: all labels + one get() round-trip per label).
+    from mahalath.db.models import OntologyEntry as _Entry
+
+    for doc in db.ontology_entries.find({"language": language}):
+        entry = _Entry.model_validate(doc)
+        label = entry.mpl_label
         base = score_entry(entry, query_cf)
         text_bonus = text_hits.get(label, 0.0)
         total = base + int(round(text_bonus * 10))
