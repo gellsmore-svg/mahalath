@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Family trace spine emission** (`galeed:` config section, `MAHALATH_GALEED_*`
+  env, `galeed` extra): `document.ingested`, `debate.completed`, and
+  `proposal.accepted/rejected/rolled_back` events — best-effort, off by default.
+
+### Changed
+- **Web UI restyle**: token-based CSS with automatic dark mode
+  (`prefers-color-scheme`), sticky nav with active page, clickable dashboard
+  cards, inline confidence meters, chip filters.
+
+### Fixed
+- Witness lazy Mongo init thread race that could silently drop events.
+
+### Added
 - **`ollama_http` adapter** (`model_adapter = "ollama_http"`): talks to Ollama purely
   over HTTP (`/api/generate` + `/api/embed`), no `ollama` binary on PATH required —
   the portable counterpart to `ollama_cli`. Validated live (generate + 1024-dim
