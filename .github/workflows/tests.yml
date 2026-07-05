@@ -32,7 +32,7 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,web,hoglah]"
+          python -m pip install -e ".[dev,web,hoglah]" "galeed @ git+https://github.com/gellsmore-svg/galeed"
 
       - name: Run tests
         run: |
