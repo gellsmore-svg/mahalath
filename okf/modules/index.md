@@ -24,3 +24,6 @@ The ~24 modules under `src/mahalath/`, grouped by role:
 
 The CLI (`cli.py`, e.g. `db-ping`, `show-config`) is a thin operator front-end;
 most work is driven autonomously by the [scheduler](maintenance.md).
+- **[web](web.md)** — the local operator browser and its API seams.
+- **[tracing](tracing.md)** — the Galeed spine witness for the pipeline.
+
