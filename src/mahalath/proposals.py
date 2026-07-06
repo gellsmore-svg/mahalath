@@ -107,6 +107,7 @@ def accept_proposal(
     proposal_id: str, db: Database, *, note: str | None = None,
     decided_via: str = "operator",
 ) -> OperatorActionResult:
+    _recover_stale_applying(db)
     proposal = get_proposal(proposal_id, db)
     if proposal.status != "pending_review":
         raise ProposalError(
@@ -119,9 +120,9 @@ def accept_proposal(
     # so the action can never be applied twice.
     claimed = db.action_proposals.update_one(
         {"proposal_id": proposal_id, "status": "pending_review"},
-        {"$set": {"status": "applying"}},
+        {"$set": {"status": "applying", "applying_at": _utcnow()}},
     )
-    if getattr(claimed, "modified_count", 1) == 0:
+    if getattr(claimed, "modified_count", 0) == 0:
         raise ProposalError(
             "proposal was decided concurrently; refresh and check its status"
         )
@@ -177,10 +178,22 @@ def accept_proposal(
     )
 
 
+def _recover_stale_applying(db: Database, *, max_age_seconds: int = 300) -> None:
+    """Reset proposals left in applying after a crash so they remain decidable."""
+    from datetime import timedelta
+
+    cutoff = _utcnow() - timedelta(seconds=max_age_seconds)
+    db.action_proposals.update_many(
+        {"status": "applying", "applying_at": {"$lt": cutoff}},
+        {"$set": {"status": "pending_review"}, "$unset": {"applying_at": ""}},
+    )
+
+
 def reject_proposal(
     proposal_id: str, db: Database, *, note: str | None = None,
     decided_via: str = "operator",
 ) -> OperatorActionResult:
+    _recover_stale_applying(db)
     proposal = get_proposal(proposal_id, db)
     if proposal.status != "pending_review":
         raise ProposalError(
@@ -188,8 +201,8 @@ def reject_proposal(
         )
 
     now = _utcnow()
-    db.action_proposals.update_one(
-        {"proposal_id": proposal_id},
+    claimed = db.action_proposals.update_one(
+        {"proposal_id": proposal_id, "status": "pending_review"},
         {
             "$set": {
                 "status": "rejected",
@@ -200,6 +213,10 @@ def reject_proposal(
             }
         },
     )
+    if getattr(claimed, "modified_count", 0) == 0:
+        raise ProposalError(
+            "proposal was decided concurrently; refresh and check its status"
+        )
     get_witness().emit(
         PROPOSAL_REJECTED,
         trace_id=proposal_id,
