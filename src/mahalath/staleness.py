@@ -1140,7 +1140,7 @@ def redefine_stale_entry(
     update_references(db, entry.mpl_label)
     # A redefinition changes meaning downstream too: dependents that
     # reference this entry must be re-evaluated against the new sense.
-    mark_dependents_stale(db, entry.mpl_label, change_type="redefinition")
+    mark_dependents_stale(db, entry.mpl_label, change_type="definition_redefined")
     clear_stale(db, entry.mpl_label)
     return verdict
 

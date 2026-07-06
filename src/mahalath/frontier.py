@@ -95,7 +95,7 @@ def frontier_review(
 
     for proposal in pending[:max_items]:
         try:
-            prompt = build_review_prompt(proposal, db, style_overlay, proposing_model=config.runtime.model)
+            prompt = build_review_prompt(proposal, db, style_overlay, proposing_model=proposal.proposed_by or config.runtime.model)
             response = adapter.generate(prompt, want_json=True)
             verdict = parse_verdict(response.text)
         except (AdapterError, FrontierReviewError) as exc:

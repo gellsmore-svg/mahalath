@@ -124,8 +124,8 @@ def test_build_review_prompt_includes_style_overlay(mongo_db) -> None:
 # --- frontier_review (end-to-end with MockAdapter) ------------------------
 
 
-def test_frontier_review_accept_routes_through_accept_proposal(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_frontier_review_accept_routes_through_accept_proposal(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed(mongo_db)
     proposal = _pending(mongo_db, child="MPL-002", parent="MPL-001", conf=7.0)
 
@@ -147,8 +147,8 @@ def test_frontier_review_accept_routes_through_accept_proposal(mongo_db) -> None
     assert "looks right" in (stored.operator_note or "")
 
 
-def test_frontier_review_reject_routes_through_reject_proposal(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_frontier_review_reject_routes_through_reject_proposal(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed(mongo_db)
     proposal = _pending(mongo_db, child="MPL-002", parent="MPL-001", conf=7.0)
 
@@ -164,8 +164,8 @@ def test_frontier_review_reject_routes_through_reject_proposal(mongo_db) -> None
     assert "backwards" in (stored.operator_note or "")
 
 
-def test_frontier_review_escalate_leaves_pending(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_frontier_review_escalate_leaves_pending(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed(mongo_db)
     proposal = _pending(mongo_db, child="MPL-002", parent="MPL-001")
 
@@ -179,8 +179,8 @@ def test_frontier_review_escalate_leaves_pending(mongo_db) -> None:
     assert "needs human judgment" in (stored.operator_note or "")
 
 
-def test_frontier_review_caps_at_max_items(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_frontier_review_caps_at_max_items(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed(mongo_db)
     # Create three more entries to host three pending parent proposals.
     repo = OntologyEntryRepository(mongo_db)

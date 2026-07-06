@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 from mahalath.adapters import MockAdapter
-from mahalath.config import AppConfig, MongoConfig, RuntimeConfig
 from mahalath.db.models import DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import OntologyEntryRepository
 from mahalath.embeddings import (
@@ -105,12 +104,7 @@ def test_shortlist_ranks_by_closeness_and_guards_model(mongo_db) -> None:
     assert shortlist_candidates(mongo_db, "MPL-999", "en") == []
 
 
-def _cfg() -> AppConfig:
-    return AppConfig(mongo=MongoConfig(database="mahalath_pytest"),
-                     runtime=RuntimeConfig())
-
-
-def test_generate_mappings_uses_embedding_shortlist(mongo_db) -> None:
+def test_generate_mappings_uses_embedding_shortlist(mongo_db, mongo_config) -> None:
     from mahalath.mappings import generate_mappings, seed_mapping_relations
 
     seed_mapping_relations(mongo_db)
@@ -130,7 +124,7 @@ def test_generate_mappings_uses_embedding_shortlist(mongo_db) -> None:
         {"relationship": "partial_overlap", "confidence": 9.0, "rationale": "ok"}))
 
     result = generate_mappings(
-        _cfg(), mongo_db, adapter,
+        mongo_config, mongo_db, adapter,
         source_language="de", target_language="en",
         candidate_source="embedding", top_k=5, apply=True,
     )

@@ -66,8 +66,8 @@ def _json_response(definition: str, confidence: float, *, key: str = "critique")
     )
 
 
-def test_rem_accepts_on_re_debate_and_removes_from_queue(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_rem_accepts_on_re_debate_and_removes_from_queue(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed_document(mongo_db)
     _seed_undecided(
         mongo_db,
@@ -94,8 +94,8 @@ def test_rem_accepts_on_re_debate_and_removes_from_queue(mongo_db) -> None:
     assert OntologyEntryRepository(mongo_db).get("MPL-001") is not None
 
 
-def test_rem_still_undecided_updates_queue_in_place(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_rem_still_undecided_updates_queue_in_place(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed_document(mongo_db)
     _seed_undecided(
         mongo_db,
@@ -134,8 +134,8 @@ def test_rem_still_undecided_updates_queue_in_place(mongo_db) -> None:
     assert exchange_count >= 2  # one iteration × two agents minimum
 
 
-def test_rem_skips_items_past_max_escalation(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_rem_skips_items_past_max_escalation(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed_document(mongo_db)
     _seed_undecided(
         mongo_db, decision_log_id="dl-stale",
@@ -156,8 +156,8 @@ def test_rem_skips_items_past_max_escalation(mongo_db) -> None:
     assert len(UndecidedQueueRepository(mongo_db).list_pending()) == 1
 
 
-def test_rem_skips_items_with_missing_context(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_rem_skips_items_with_missing_context(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed_document(mongo_db)
     # Pre-S2.13 row that doesn't carry context
     UndecidedQueueRepository(mongo_db).insert(UndecidedItem(
@@ -176,8 +176,8 @@ def test_rem_skips_items_with_missing_context(mongo_db) -> None:
     assert adapter.calls == []
 
 
-def test_rem_caps_at_max_items(mongo_db) -> None:
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+def test_rem_caps_at_max_items(mongo_db, mongo_config) -> None:
+    config = mongo_config
     _seed_document(mongo_db)
     for i in range(5):
         _seed_undecided(

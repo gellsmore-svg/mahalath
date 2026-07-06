@@ -302,7 +302,7 @@ def test_list_stale_returns_only_flagged(mongo_db) -> None:
 # --- Operator definition helper -------------------------------------------
 
 
-def test_audit_clears_when_consistent_at_threshold(mongo_db) -> None:
+def test_audit_clears_when_consistent_at_threshold(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
     from mahalath.config import AppConfig, MongoConfig
@@ -321,7 +321,7 @@ def test_audit_clears_when_consistent_at_threshold(mongo_db) -> None:
         "reasoning": "beta's definition still holds under current alpha",
     })
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = audit_pending_stale(config, mongo_db, adapter, max_items=5)
 
     assert result.items_audited == 1
@@ -331,7 +331,7 @@ def test_audit_clears_when_consistent_at_threshold(mongo_db) -> None:
     assert stored.stale_reasons == []
 
 
-def test_audit_keeps_stale_when_inconsistent(mongo_db) -> None:
+def test_audit_keeps_stale_when_inconsistent(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
     from mahalath.config import AppConfig, MongoConfig
@@ -348,7 +348,7 @@ def test_audit_keeps_stale_when_inconsistent(mongo_db) -> None:
         "reasoning": "alpha was redefined to mean something else",
     })
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = audit_pending_stale(config, mongo_db, adapter)
 
     assert result.items_still_stale == 1
@@ -361,7 +361,7 @@ def test_audit_keeps_stale_when_inconsistent(mongo_db) -> None:
     )
 
 
-def test_audit_keeps_stale_when_below_threshold(mongo_db) -> None:
+def test_audit_keeps_stale_when_below_threshold(mongo_db, mongo_config) -> None:
     """Consistent verdict but low confidence → keep stale for safety."""
     import json
     from mahalath.adapters import MockAdapter
@@ -375,7 +375,7 @@ def test_audit_keeps_stale_when_below_threshold(mongo_db) -> None:
 
     verdict = json.dumps({"decision": "consistent", "confidence": 5.0, "reasoning": "shrug"})
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = audit_pending_stale(config, mongo_db, adapter)
     assert result.items_cleared == 0
     assert result.items_still_stale == 1
@@ -394,7 +394,7 @@ def test_audit_unclear_routes_to_keep_stale(mongo_db) -> None:
 
     verdict = json.dumps({"decision": "unclear", "confidence": 9.0, "reasoning": "ambiguous"})
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = audit_pending_stale(config, mongo_db, adapter)
     assert result.items_cleared == 0
     assert result.items_still_stale == 1
@@ -413,7 +413,7 @@ def test_parse_audit_verdict() -> None:
         parse_audit_verdict(json.dumps({"decision": "yes", "confidence": 9}))
 
 
-def test_redefine_appends_def_and_clears_stale(mongo_db) -> None:
+def test_redefine_appends_def_and_clears_stale(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
     from mahalath.config import AppConfig, MongoConfig
@@ -443,7 +443,7 @@ def test_redefine_appends_def_and_clears_stale(mongo_db) -> None:
         "rationale": "Updated to reflect alpha's current state.",
     })
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = redefine_pending_stale(config, mongo_db, adapter, max_items=5)
 
     assert result.items_redefined == 1
@@ -456,7 +456,7 @@ def test_redefine_appends_def_and_clears_stale(mongo_db) -> None:
     assert "second concept" in stored.definitions[-1].text
 
 
-def test_redefine_skips_when_below_min_confidence(mongo_db) -> None:
+def test_redefine_skips_when_below_min_confidence(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
     from mahalath.config import AppConfig, MongoConfig
@@ -481,7 +481,7 @@ def test_redefine_skips_when_below_min_confidence(mongo_db) -> None:
         "rationale": "not sure",
     })
     adapter = MockAdapter(default_response=verdict)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = redefine_pending_stale(
         config, mongo_db, adapter, min_confidence=6.0,
     )
@@ -493,7 +493,7 @@ def test_redefine_skips_when_below_min_confidence(mongo_db) -> None:
     assert len(stored.definitions) == 1
 
 
-def test_redefine_only_picks_audit_flagged_items(mongo_db) -> None:
+def test_redefine_only_picks_audit_flagged_items(mongo_db, mongo_config) -> None:
     """Stale entries without an audit verdict are NOT redefined yet."""
     import json
     from mahalath.adapters import MockAdapter
@@ -511,7 +511,7 @@ def test_redefine_only_picks_audit_flagged_items(mongo_db) -> None:
     adapter = MockAdapter(default_response=json.dumps({
         "new_definition": "x", "confidence": 9.0, "rationale": "x",
     }))
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
     result = redefine_pending_stale(config, mongo_db, adapter)
     # No item picked up because no audit_inconsistent reason
     assert result.items_at_start == 0
@@ -734,7 +734,7 @@ def _redefine_adapter_with_intents():
     )
 
 
-def test_redefine_runs_scoped_intent_backfill(mongo_db) -> None:
+def test_redefine_runs_scoped_intent_backfill(mongo_db, mongo_config) -> None:
     from mahalath.config import AppConfig, MongoConfig
     from mahalath.db.models import DefinitionContext
     from mahalath.db.repositories import DefinitionContextRepository
@@ -745,7 +745,7 @@ def test_redefine_runs_scoped_intent_backfill(mongo_db) -> None:
         name="teach", description="instructs", kind="intent",
     ))
     _seed_stale_inconsistent(mongo_db)
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
 
     result = redefine_pending_stale(
         config, mongo_db, _redefine_adapter_with_intents(), max_items=5,
@@ -764,7 +764,7 @@ def test_redefine_runs_scoped_intent_backfill(mongo_db) -> None:
     assert new_def.intent_confidence == 9.0
 
 
-def test_redefine_intent_backfill_opt_out(mongo_db) -> None:
+def test_redefine_intent_backfill_opt_out(mongo_db, mongo_config) -> None:
     from mahalath.config import AppConfig, MongoConfig
     from mahalath.intents import INTENT_ATTRIBUTION_TAG
     from mahalath.db.models import DefinitionContext
@@ -776,7 +776,7 @@ def test_redefine_intent_backfill_opt_out(mongo_db) -> None:
     ))
     _seed_stale_inconsistent(mongo_db)
     adapter = _redefine_adapter_with_intents()
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
 
     result = redefine_pending_stale(
         config, mongo_db, adapter, max_items=5, intent_backfill=False,
@@ -791,14 +791,14 @@ def test_redefine_intent_backfill_opt_out(mongo_db) -> None:
     assert stored.definitions[-1].intent_tags == []
 
 
-def test_redefine_intent_backfill_noop_without_taxonomy(mongo_db) -> None:
+def test_redefine_intent_backfill_noop_without_taxonomy(mongo_db, mongo_config) -> None:
     from mahalath.config import AppConfig, MongoConfig
     from mahalath.intents import INTENT_ATTRIBUTION_TAG
     from mahalath.staleness import redefine_pending_stale
 
     _seed_stale_inconsistent(mongo_db)
     adapter = _redefine_adapter_with_intents()
-    config = AppConfig(mongo=MongoConfig(database="mahalath_pytest"))
+    config = mongo_config
 
     result = redefine_pending_stale(config, mongo_db, adapter, max_items=5)
 

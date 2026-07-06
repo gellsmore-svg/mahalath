@@ -15,7 +15,6 @@ import json
 from dataclasses import dataclass, field as _field
 
 from mahalath.adapters.base import AdapterResponse
-from mahalath.config import AppConfig, MongoConfig, RuntimeConfig
 from mahalath.db.models import DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
     MappingRepository,
@@ -217,7 +216,7 @@ def test_illocution_comparison(mongo_db) -> None:
     assert cmp["divergent"] is True
 
 
-def test_generate_dry_run_stores_nothing(mongo_db) -> None:
+def test_generate_dry_run_stores_nothing(mongo_db, mongo_config) -> None:
     seed_mapping_relations(mongo_db)
     _seed_pair(mongo_db)
     adapter = _SeqAdapter(responses=[
@@ -226,8 +225,7 @@ def test_generate_dry_run_stores_nothing(mongo_db) -> None:
         _verdict("partial_overlap", 9.0),
         _verdict("partial_overlap", 9.0),
     ])
-    cfg = AppConfig(mongo=MongoConfig(database="mahalath_pytest"),
-                    runtime=RuntimeConfig())
+    cfg = mongo_config
     result = generate_mappings(
         cfg, mongo_db, adapter,
         source_language="de", target_language="en", max_items=5,
@@ -237,7 +235,7 @@ def test_generate_dry_run_stores_nothing(mongo_db) -> None:
     assert mongo_db.mappings.count_documents({}) == 0  # dry-run
 
 
-def test_generate_apply_fail_closed_and_skip_existing(mongo_db) -> None:
+def test_generate_apply_fail_closed_and_skip_existing(mongo_db, mongo_config) -> None:
     seed_mapping_relations(mongo_db)
     _seed_pair(mongo_db)
     adapter = _SeqAdapter(responses=[
@@ -247,8 +245,7 @@ def test_generate_apply_fail_closed_and_skip_existing(mongo_db) -> None:
         _verdict("partial_overlap", 9.0),
         _verdict("partial_overlap", 9.0),
     ])
-    cfg = AppConfig(mongo=MongoConfig(database="mahalath_pytest"),
-                    runtime=RuntimeConfig())
+    cfg = mongo_config
     result = generate_mappings(
         cfg, mongo_db, adapter,
         source_language="de", target_language="en", max_items=5, apply=True,
