@@ -305,7 +305,6 @@ def test_list_stale_returns_only_flagged(mongo_db) -> None:
 def test_audit_clears_when_consistent_at_threshold(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
 
     _seed(mongo_db, "MPL-001", "alpha", definitions=["foundational concept"])
@@ -334,7 +333,6 @@ def test_audit_clears_when_consistent_at_threshold(mongo_db, mongo_config) -> No
 def test_audit_keeps_stale_when_inconsistent(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
 
     _seed(mongo_db, "MPL-001", "alpha")
@@ -365,7 +363,6 @@ def test_audit_keeps_stale_when_below_threshold(mongo_db, mongo_config) -> None:
     """Consistent verdict but low confidence → keep stale for safety."""
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
 
     _seed(mongo_db, "MPL-001", "alpha")
@@ -381,10 +378,9 @@ def test_audit_keeps_stale_when_below_threshold(mongo_db, mongo_config) -> None:
     assert result.items_still_stale == 1
 
 
-def test_audit_unclear_routes_to_keep_stale(mongo_db) -> None:
+def test_audit_unclear_routes_to_keep_stale(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import audit_pending_stale, mark_dependents_stale, update_references
 
     _seed(mongo_db, "MPL-001", "alpha")
@@ -416,7 +412,6 @@ def test_parse_audit_verdict() -> None:
 def test_redefine_appends_def_and_clears_stale(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import (
         redefine_pending_stale, mark_dependents_stale, update_references,
     )
@@ -459,7 +454,6 @@ def test_redefine_appends_def_and_clears_stale(mongo_db, mongo_config) -> None:
 def test_redefine_skips_when_below_min_confidence(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import (
         redefine_pending_stale, mark_dependents_stale, update_references,
     )
@@ -497,7 +491,6 @@ def test_redefine_only_picks_audit_flagged_items(mongo_db, mongo_config) -> None
     """Stale entries without an audit verdict are NOT redefined yet."""
     import json
     from mahalath.adapters import MockAdapter
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.staleness import (
         redefine_pending_stale, mark_dependents_stale, update_references,
     )
@@ -735,7 +728,6 @@ def _redefine_adapter_with_intents():
 
 
 def test_redefine_runs_scoped_intent_backfill(mongo_db, mongo_config) -> None:
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.db.models import DefinitionContext
     from mahalath.db.repositories import DefinitionContextRepository
     from mahalath.staleness import redefine_pending_stale
@@ -765,7 +757,6 @@ def test_redefine_runs_scoped_intent_backfill(mongo_db, mongo_config) -> None:
 
 
 def test_redefine_intent_backfill_opt_out(mongo_db, mongo_config) -> None:
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.intents import INTENT_ATTRIBUTION_TAG
     from mahalath.db.models import DefinitionContext
     from mahalath.db.repositories import DefinitionContextRepository
@@ -792,7 +783,6 @@ def test_redefine_intent_backfill_opt_out(mongo_db, mongo_config) -> None:
 
 
 def test_redefine_intent_backfill_noop_without_taxonomy(mongo_db, mongo_config) -> None:
-    from mahalath.config import AppConfig, MongoConfig
     from mahalath.intents import INTENT_ATTRIBUTION_TAG
     from mahalath.staleness import redefine_pending_stale
 
