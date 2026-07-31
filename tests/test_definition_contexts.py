@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json as _json
 
-import pytest
 
 from mahalath.adapters import MockAdapter
 from mahalath.chat import answer_question, build_chat_prompt

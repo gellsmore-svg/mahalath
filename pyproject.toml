@@ -59,3 +59,13 @@ mahalath = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly rather than inheriting ruff's defaults: ruff 0.16
+# widened those defaults, which silently turns a green gate red on a tool
+# upgrade. This is the historical default set (pyflakes + the pycodestyle
+# errors worth gating), so the gate means the same thing on every ruff version.
+select = ["E4", "E7", "E9", "F"]

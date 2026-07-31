@@ -6,9 +6,13 @@ Runs against a live MongoDB test database (the `mongo_db` fixture).
 
 from __future__ import annotations
 
+import json as _json
+from dataclasses import dataclass as _dataclass, field as _field
+
 import pytest
 from pydantic import ValidationError
 
+from mahalath.adapters.base import AdapterResponse
 from mahalath.db.models import (
     DefinitionContext,
     DefinitionVersion,
@@ -19,7 +23,12 @@ from mahalath.db.repositories import (
     OntologyEntryRepository,
 )
 from mahalath.intents import (
+    INTENT_ATTRIBUTION_TAG,
     STANDARD_INTENTS,
+    attribute_intent,
+    backfill_intents,
+    build_intent_prompt,
+    parse_intent_verdict,
     resolve_intent_tag,
     seed_intents,
 )
@@ -230,19 +239,6 @@ def test_chat_context_map_excludes_intents(mongo_db) -> None:
 
 
 # --- I-B: N-pass attribution + backfill ---------------------------------------
-
-
-import json as _json
-from dataclasses import dataclass as _dataclass, field as _field
-
-from mahalath.adapters.base import AdapterResponse
-from mahalath.intents import (
-    INTENT_ATTRIBUTION_TAG,
-    attribute_intent,
-    backfill_intents,
-    build_intent_prompt,
-    parse_intent_verdict,
-)
 
 
 @_dataclass

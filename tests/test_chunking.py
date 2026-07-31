@@ -6,7 +6,6 @@ import pytest
 
 from mahalath.adapters import MockAdapter
 from mahalath.chunking import (
-    Chunk,
     chunk_markdown,
     extract_candidates_chunked,
 )

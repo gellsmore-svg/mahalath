@@ -85,8 +85,12 @@ def test_refresh_glossary_idempotent(
     second_json = json.loads(json_path.read_text(encoding="utf-8"))
 
     # Markdown header carries a generated_at timestamp so byte-equality
-    # is not expected, but the count and entry list should match.
+    # is not expected, but everything else must be identical.
+    def _without_timestamp(md: bytes) -> list[bytes]:
+        return [ln for ln in md.splitlines() if not ln.startswith(b"Generated ")]
+
     assert b"MPL-001" in second_md_bytes
+    assert _without_timestamp(first_md_bytes) == _without_timestamp(second_md_bytes)
     assert first_json["count"] == second_json["count"]
     assert first_json["entries"][0]["mpl_label"] == second_json["entries"][0]["mpl_label"]
 

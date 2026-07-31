@@ -31,6 +31,7 @@ the response can cite specific entries.
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import re
 import time
@@ -278,9 +279,6 @@ def extract_cited_labels(text: str) -> list[str]:
 
 
 # --- Response parsing ----------------------------------------------------
-
-
-import json as _json
 
 
 def parse_chat_envelope(text: str) -> tuple[str, list[SuggestedAction]]:

@@ -26,7 +26,6 @@ from mahalath.mappings import (
     attribute_mapping,
     compare_illocution,
     generate_mappings,
-    mark_mappings_stale,
     seed_mapping_relations,
 )
 

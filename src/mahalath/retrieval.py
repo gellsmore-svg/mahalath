@@ -203,7 +203,6 @@ def search_terms(
     index (the latter catches stemmed / multi-word hits the substring
     scorer misses). Falls back to scorer-only if no text index exists.
     """
-    repo = OntologyEntryRepository(db)
     ctx_by_id = {c.context_id: c.name for c in DefinitionContextRepository(db).all()}
     terms = [t for t in (s.strip() for s in terms) if t]
     if not terms:

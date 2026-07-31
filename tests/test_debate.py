@@ -14,7 +14,6 @@ import pytest
 from mahalath.adapters import MockAdapter
 from mahalath.config import RuntimeConfig
 from mahalath.debate import (
-    AgentOpinion,
     DebateError,
     PRECISION_CRITIC,
     SPEAKER_TAG_PRECISION_CRITIC,

@@ -32,7 +32,11 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,web,hoglah]" "galeed @ git+https://github.com/gellsmore-svg/galeed"
+          python -m pip install -e ".[dev,web,hoglah]" "galeed @ git+https://github.com/gellsmore-svg/galeed" ruff
+
+      - name: Lint (ruff)
+        run: |
+          ruff check src tests
 
       - name: Run tests
         run: |

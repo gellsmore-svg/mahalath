@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from mahalath.adapters import MockAdapter
 from mahalath.chat import (

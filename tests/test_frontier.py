@@ -8,7 +8,6 @@ import pytest
 
 from mahalath.actions import ProposeParent, dispatch
 from mahalath.adapters import MockAdapter
-from mahalath.config import AppConfig, MongoConfig
 from mahalath.db.models import DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
     ActionProposalRepository,

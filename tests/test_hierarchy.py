@@ -13,7 +13,7 @@ import pytest
 
 from dataclasses import dataclass, field
 
-from mahalath.actions import ProposeAlias, ProposeParent
+from mahalath.actions import ProposeParent
 from mahalath.adapters import MockAdapter
 from mahalath.adapters.base import AdapterResponse
 from mahalath.config import RuntimeConfig

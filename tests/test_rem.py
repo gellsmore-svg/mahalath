@@ -11,20 +11,16 @@ from __future__ import annotations
 import json
 
 from mahalath.adapters import MockAdapter
-from mahalath.config import AppConfig, MongoConfig
 from mahalath.db.models import (
     DocumentRecord,
     UndecidedItem,
 )
 from mahalath.db.repositories import (
     ActionProposalRepository,  # noqa: F401 - confirms import surface
-    AgentExchangeRepository,
-    DecisionLogRepository,
     DocumentRepository,
     OntologyEntryRepository,
     UndecidedQueueRepository,
 )
-from mahalath.debate import PRECISION_CRITIC, SYNTHESIS_EXPLORER
 from mahalath.debate import SPEAKER_TAG_PRECISION_CRITIC, SPEAKER_TAG_SYNTHESIS_EXPLORER
 from mahalath.rem import rem_review
 

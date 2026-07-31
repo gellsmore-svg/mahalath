@@ -16,7 +16,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from mahalath.actions import ProposeParent, dispatch
-from mahalath.config import AppConfig, MongoConfig
+from mahalath.config import AppConfig
 from mahalath.db.models import DefinitionContext, DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
     ActionProposalRepository,

@@ -34,8 +34,6 @@ import re
 from dataclasses import dataclass
 
 from mahalath.adapters.base import Adapter
-
-log = logging.getLogger("mahalath")
 from mahalath.extraction import (
     CandidateTerm,
     DEFAULT_MAX_TERMS,
@@ -43,6 +41,8 @@ from mahalath.extraction import (
     build_extraction_prompt,
     parse_candidates,
 )
+
+log = logging.getLogger("mahalath")
 
 DEFAULT_CHUNK_CHARS = 30_000
 DEFAULT_MAX_TOTAL_TERMS = 100
