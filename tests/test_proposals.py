@@ -94,6 +94,43 @@ def test_get_proposal_raises_on_missing(mongo_db) -> None:
 # --- Accept ----------------------------------------------------------------
 
 
+def test_accept_proposal_concurrent_claim(mongo_db) -> None:
+    """#21 / #4: only one of two concurrent accepts may apply the action."""
+    import threading
+
+    _seed(mongo_db)
+    proposal = _pending_parent_proposal(
+        mongo_db, "MPL-002", "MPL-001", conf=7.0
+    )
+    results: list = []
+    errors: list = []
+    barrier = threading.Barrier(2)
+
+    def try_accept() -> None:
+        barrier.wait(timeout=5)
+        try:
+            results.append(accept_proposal(proposal.proposal_id, mongo_db))
+        except ProposalError as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=try_accept)
+    t2 = threading.Thread(target=try_accept)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert len(results) == 1, f"expected one winner, got {results!r} / {errors!r}"
+    assert len(errors) == 1
+    assert results[0].new_status == "applied"
+    # Loser saw either concurrent claim or non-pending status.
+    assert any(
+        "concurrent" in str(e).lower() or "pending_review" in str(e).lower()
+        for e in errors
+    )
+    entry = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert entry.parent_label == "MPL-001"
+
+
 def test_accept_proposal_applies_and_records_decision(mongo_db) -> None:
     _seed(mongo_db)
     proposal = _pending_parent_proposal(

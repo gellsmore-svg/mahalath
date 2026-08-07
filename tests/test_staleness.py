@@ -409,6 +409,48 @@ def test_parse_audit_verdict() -> None:
         parse_audit_verdict(json.dumps({"decision": "yes", "confidence": 9}))
 
 
+def test_redefine_cascades_dependents(mongo_db) -> None:
+    """#21 / #2: a successful redefine marks downstream dependents stale."""
+    import json
+
+    from mahalath.adapters import MockAdapter
+    from mahalath.db.repositories import OntologyEntryRepository
+    from mahalath.staleness import redefine_stale_entry, update_references
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["MPL-001 reference."])
+    _seed(mongo_db, "MPL-003", "gamma", definitions=["MPL-002 reference."])
+    update_references(mongo_db, "MPL-002")
+    update_references(mongo_db, "MPL-003")
+
+    # Mark alpha stale so redefine_stale_entry is a realistic call path.
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-001"},
+        {"$set": {"is_stale": True}, "$push": {"stale_reasons": {"change_type": "x"}}},
+    )
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    adapter = MockAdapter(
+        default_response=json.dumps(
+            {
+                "new_definition": "alpha sense v2 (redefined)",
+                "confidence": 8.5,
+                "rationale": "sharper boundary",
+            }
+        )
+    )
+    verdict = redefine_stale_entry(entry, mongo_db, adapter, min_confidence=6.0)
+    assert verdict is not None
+    assert OntologyEntryRepository(mongo_db).get("MPL-001").is_stale is False
+    # Dependents that referenced the redefined label must now be stale.
+    beta = OntologyEntryRepository(mongo_db).get("MPL-002")
+    gamma = OntologyEntryRepository(mongo_db).get("MPL-003")
+    assert beta.is_stale is True
+    assert gamma.is_stale is True
+    assert any(
+        r.get("change_type") == "definition_redefined" for r in beta.stale_reasons
+    )
+
+
 def test_redefine_appends_def_and_clears_stale(mongo_db, mongo_config) -> None:
     import json
     from mahalath.adapters import MockAdapter

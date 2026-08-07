@@ -62,6 +62,60 @@ def _json_response(definition: str, confidence: float, *, key: str = "critique")
     )
 
 
+def test_rem_passes_available_contexts(mongo_db, mongo_config, monkeypatch) -> None:
+    """#21 / #1: REM must hand definition frames to run_debate."""
+    from mahalath.db.models import DefinitionContext
+    from mahalath.db.repositories import DefinitionContextRepository
+    from mahalath.debate import DebateResult
+
+    _seed_document(mongo_db)
+    _seed_undecided(
+        mongo_db,
+        decision_log_id="dl-ctx-1",
+        term="agonist",
+        context="An agonist binds to a receptor and activates it.",
+    )
+    DefinitionContextRepository(mongo_db).insert(
+        DefinitionContext(
+            name="pharmacology",
+            description="Drug–receptor framing",
+            kind="frame",
+        )
+    )
+
+    captured: dict = {}
+
+    def fake_run_debate(
+        term,
+        context,
+        source_document_id,
+        adapter,
+        runtime,
+        *,
+        style_overlay=None,
+        available_contexts=None,
+        **_kw,
+    ):
+        captured["available_contexts"] = available_contexts
+        return DebateResult(
+            decision_log_id="dl-fake",
+            term=term,
+            source_document_id=source_document_id,
+            outcome="undecided",
+            final_definition=None,
+            final_confidence=5.0,
+            iterations_used=1,
+            context=context,
+        )
+
+    monkeypatch.setattr("mahalath.rem.run_debate", fake_run_debate)
+    adapter = MockAdapter(responses={})
+    rem_review(mongo_config, mongo_db, adapter, max_items=1)
+    assert captured.get("available_contexts")
+    names = {c["name"] for c in captured["available_contexts"]}
+    assert "pharmacology" in names
+
+
 def test_rem_accepts_on_re_debate_and_removes_from_queue(mongo_db, mongo_config) -> None:
     config = mongo_config
     _seed_document(mongo_db)
