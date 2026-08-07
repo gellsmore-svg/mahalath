@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-07
+
+### Added
+- `mahalath.deborah` — novel-concept detection for Deborah substrate slice
+- Manifest capability `detect_novel`
+
 ### Added
 - **Family trace spine emission** (`galeed:` config section, `MAHALATH_GALEED_*`
   env, `galeed` extra): `document.ingested`, `debate.completed`, and

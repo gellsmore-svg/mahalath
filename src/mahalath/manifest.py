@@ -52,5 +52,33 @@ def build_manifest() -> Manifest:
                 },
                 tags=["semantic", "retrieval", "mpl"],
             ),
+            capability(
+                "detect_novel",
+                "Detect candidate terms in a claim that lack confident ontology matches "
+                "(exact/alias/label). Used by Deborah substrate slice to open residual "
+                "uncertainty when concepts are unmodelled.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "claim or question text"},
+                        "terms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "optional pre-extracted terms",
+                        },
+                    },
+                    "required": ["text"],
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "terms_checked": {"type": "array", "items": {"type": "string"}},
+                        "known": {"type": "array"},
+                        "novel": {"type": "array", "items": {"type": "string"}},
+                        "novel_detected": {"type": "boolean"},
+                    },
+                },
+                tags=["semantic", "novel", "deborah", "evaluate"],
+            ),
         ],
     )
