@@ -17,8 +17,9 @@ input/file.md  →  ingest + SHA-256 dedupe + archive
               →  heading-aware chunk (any document size)
               →  LLM-driven candidate term extraction
               →  multi-iteration debate (PrecisionCritic + SynthesisExplorer)
-              →  if accepted: ontology entry (frame-tagged definition, per-definition
-                 consensus score) + hierarchy review pass (3-pass consensus)
+              →  if accepted: ontology entry (frame-tagged definition; debate path
+                 records a per-definition consensus score) + hierarchy review
+                 pass (3-pass consensus)
               →  if undecided: queue for nightly REM re-debate
               →  reference extraction → reverse index → staleness cascade when
                  upstream entries change → audit/redefine self-healing
@@ -30,6 +31,8 @@ Every model interaction is recorded with a `decision_log_id` and queryable forev
 ### Polysemy as a first-class citizen
 
 Definitions are tagged with a **context frame** (a governed taxonomy of `DefinitionContext` rows, authored per corpus). One entry can legitimately carry, say, a legal definition *and* an engineering one — they are co-equal; nothing supersedes anything. The web UI, chat, glossary export, and retrieval layer all group and label definitions by frame.
+
+**`consensus_score` is pathway-specific.** The multi-agent debate path records a per-definition consensus score (min confidence across PrecisionCritic / SynthesisExplorer). The REM redefine path deliberately leaves it `null` — it is a single-model verdict, not multi-agent agreement — and operator-authored definitions likewise have no consensus score. Older definitions may lack the field entirely (schema evolution); treat absence/`null` as "not a debate consensus," not as zero.
 
 ### Self-healing
 
@@ -203,7 +206,8 @@ Nine MongoDB collections: `documents`, `ontology_entries` (`_id` = MPL label), `
 
 ## Routing via Hoglah (queue daemon)
 
-By default Mahalath calls Ollama directly (`model_adapter: ollama_cli`). For a
+By default Mahalath calls Ollama over HTTP (`model_adapter: ollama_http`; no
+`ollama` binary required on PATH). For a
 walk-away run you can instead route **both generation and embeddings** through
 [Hoglah](https://github.com/gellsmore-svg/hoglah), a local-first job queue, so
 every model call is serialized through one durable queue (handy on a single
@@ -249,6 +253,8 @@ topics/queues/streams. Install the broker client with the matching extra:
 - **Self-analysis is read-only and file-snapshotted** — the effectiveness layer aggregates the audit trails it reports on but can never write to them (ADR-027).
 
 The full decision record (30 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
+
+A point-in-time functional + code review of 1.2.0 is in [`docs/review-2026-08-08.md`](docs/review-2026-08-08.md). Findings H1–H3 / F1–F6 / M1 / M4 are actioned in **1.3.0** (no-op redefine skip, decision_log on rem_redefine, `dedupe-definitions`, `list-ontology --limit`, `ollama_http` default, PEP 639 license).
 
 ## Status
 

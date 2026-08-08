@@ -54,7 +54,7 @@ def test_default_rem_job_counts_undecided(
     # so run from a temp dir to keep the repo's logs/ test-free.
     monkeypatch.chdir(tmp_path)
     # Use the mock adapter: the REM job builds a generation adapter, and the
-    # default ollama_cli adapter requires the local Ollama executable to exist
+    # default adapter would try to reach Ollama; force mock for the unit test
     # (absent on CI runners). This test only asserts the job runs cleanly and
     # writes the effectiveness snapshot, so the real model path is incidental.
     mongo_config.runtime.model_adapter = "mock"

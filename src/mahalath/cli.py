@@ -47,9 +47,24 @@ from typing import Any
 from mahalath.config import AppConfig, load_config
 
 
+class _SubcommandParser(argparse.ArgumentParser):
+    """Print this subcommand's usage on error, not the top-level command list.
+
+    Default argparse re-prints every sibling subcommand name when a flag is
+    wrong on one of them (review F4). Mirror Tirzah's fix: only this
+    subcommand's usage appears.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mahalath")
-    subcommands = parser.add_subparsers(dest="command")
+    subcommands = parser.add_subparsers(
+        dest="command", parser_class=_SubcommandParser,
+    )
 
     subcommands.add_parser("db-ping", help="Ping the configured MongoDB instance.")
     subcommands.add_parser("show-config", help="Print the loaded configuration as JSON.")
@@ -233,8 +248,16 @@ def main(argv: list[str] | None = None) -> int:
         "--language", default="en",
         help="Language lexicon to check/enqueue against (default en).",
     )
-    subcommands.add_parser(
+    list_ontology_parser = subcommands.add_parser(
         "list-ontology", help="List ontology entries."
+    )
+    list_ontology_parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Max entries to return (default: all).",
+    )
+    list_ontology_parser.add_argument(
+        "--skip", type=int, default=0,
+        help="Number of entries to skip after sorting by label (default 0).",
     )
 
     list_proposals_parser = subcommands.add_parser(
@@ -378,6 +401,16 @@ def main(argv: list[str] | None = None) -> int:
     migrate_parser.add_argument(
         "--dry-run", action="store_true",
         help="List the migrations that would run, without applying them.",
+    )
+
+    dedupe_defs_parser = subcommands.add_parser(
+        "dedupe-definitions",
+        help="Drop later exact-duplicate definitions that share a frame "
+        "(context_id). Default is dry-run; pass --apply to write.",
+    )
+    dedupe_defs_parser.add_argument(
+        "--apply", action="store_true",
+        help="Write the de-duplicated definitions (default: dry-run).",
     )
 
     subcommands.add_parser(
@@ -688,7 +721,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "list-ontology":
-        return _list_ontology(config)
+        return _list_ontology(
+            config, limit=args.limit, skip=args.skip,
+        )
+
+    if args.command == "dedupe-definitions":
+        return _dedupe_definitions(config, apply=args.apply)
 
     if args.command == "retrieve":
         return _retrieve(
@@ -2643,7 +2681,12 @@ def _propose_term(
         close_all()
 
 
-def _list_ontology(config: AppConfig) -> int:
+def _list_ontology(
+    config: AppConfig,
+    *,
+    limit: int | None = None,
+    skip: int = 0,
+) -> int:
     from mahalath.db import close_all, get_database
     from mahalath.db.repositories import OntologyEntryRepository
 
@@ -2656,8 +2699,14 @@ def _list_ontology(config: AppConfig) -> int:
     try:
         repo = OntologyEntryRepository(db)
         labels = sorted(repo.all_labels())
+        total = len(labels)
+        if skip < 0:
+            skip = 0
+        sliced = labels[skip:]
+        if limit is not None and limit >= 0:
+            sliced = sliced[:limit]
         entries = []
-        for label in labels:
+        for label in sliced:
             entry = repo.get(label)
             if entry is None:
                 continue
@@ -2668,7 +2717,38 @@ def _list_ontology(config: AppConfig) -> int:
                 "confidence": entry.confidence,
                 "definition": entry.definitions[0].text if entry.definitions else None,
             })
-        print(json.dumps({"count": len(entries), "entries": entries}, indent=2))
+        print(json.dumps({
+            "count": len(entries),
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "entries": entries,
+        }, indent=2))
+        return 0
+    finally:
+        close_all()
+
+
+def _dedupe_definitions(config: AppConfig, *, apply: bool) -> int:
+    from mahalath.db import close_all, get_database
+    from mahalath.staleness import dedupe_identical_frame_definitions
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        result = dedupe_identical_frame_definitions(db, dry_run=not apply)
+        print(json.dumps({
+            "ok": True,
+            "dry_run": not apply,
+            "entries_scanned": result.entries_scanned,
+            "entries_with_duplicates": result.entries_with_duplicates,
+            "definitions_removed": result.definitions_removed,
+            "details": result.details,
+        }, indent=2))
         return 0
     finally:
         close_all()

@@ -44,13 +44,23 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from pymongo.database import Database
 
 from mahalath.adapters.base import Adapter, AdapterError
 from mahalath.config import AppConfig
-from mahalath.db.models import OntologyEntry
-from mahalath.db.repositories import OntologyEntryRepository
+from mahalath.db.models import (
+    AgentExchange,
+    DebateMessage,
+    DecisionLogEntry,
+    OntologyEntry,
+)
+from mahalath.db.repositories import (
+    AgentExchangeRepository,
+    DecisionLogRepository,
+    OntologyEntryRepository,
+)
 from mahalath.style import load_style_overlay, render_style_block
 
 
@@ -370,6 +380,85 @@ def append_operator_definition(
         note=note or "operator-authored definition appended",
         cascade=cascade,
     )
+
+
+@dataclass
+class DedupeDefinitionsResult:
+    """Report from `dedupe_identical_frame_definitions`."""
+
+    entries_scanned: int = 0
+    entries_with_duplicates: int = 0
+    definitions_removed: int = 0
+    details: list[dict[str, Any]] = field(default_factory=list)
+
+
+def dedupe_identical_frame_definitions(
+    db: Database,
+    *,
+    dry_run: bool = True,
+    only_labels: set[str] | None = None,
+) -> DedupeDefinitionsResult:
+    """Drop later exact-duplicate definitions that share a frame (context_id).
+
+    Polysemy keeps co-equal *different* texts under different frames; two
+    byte-identical (after whitespace normalisation) strings under the same
+    `context_id` are not two meanings. Keeps the earliest occurrence of
+    each (text, context_id) pair so provenance on the first write is
+    preserved. Does not cascade staleness — content is unchanged.
+
+    Default is dry-run. Used as a one-off cleanup after H1 lands so the
+    REM redefine path cannot re-accumulate the same duplicates.
+    """
+    result = DedupeDefinitionsResult()
+    query: dict[str, Any] = {}
+    if only_labels is not None:
+        query["_id"] = {"$in": sorted(only_labels)}
+
+    for doc in db.ontology_entries.find(query):
+        result.entries_scanned += 1
+        definitions = doc.get("definitions") or []
+        if len(definitions) < 2:
+            continue
+
+        seen: set[tuple[str, str | None]] = set()
+        keep: list[dict[str, Any]] = []
+        removed = 0
+        for definition in definitions:
+            text = definition.get("text") if isinstance(definition, dict) else None
+            context_id = (
+                definition.get("context_id") if isinstance(definition, dict) else None
+            )
+            key = (_normalize_definition_text(str(text or "")), context_id)
+            if key[0] and key in seen:
+                removed += 1
+                continue
+            if key[0]:
+                seen.add(key)
+            keep.append(definition)
+
+        if removed == 0:
+            continue
+
+        result.entries_with_duplicates += 1
+        result.definitions_removed += removed
+        result.details.append({
+            "mpl_label": doc.get("_id") or doc.get("mpl_label"),
+            "before": len(definitions),
+            "after": len(keep),
+            "removed": removed,
+        })
+        if not dry_run:
+            db.ontology_entries.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "definitions": keep,
+                        "updated_at": _utcnow(),
+                    }
+                },
+            )
+
+    return result
 
 
 @dataclass(frozen=True)
@@ -855,12 +944,17 @@ class RedefineVerdict:
     confidence: float
     rationale: str
     context_name: str | None = None
+    # True when the model re-derived text already present in the same
+    # frame: we clear stale without appending or cascading (review H1/H2).
+    noop: bool = False
+    decision_log_id: str | None = None
 
 
 @dataclass
 class RedefineResult:
     items_at_start: int = 0
     items_redefined: int = 0
+    items_noop: int = 0
     items_skipped: int = 0
     items_errored: int = 0
     verdicts: list[dict[str, Any]] = field(default_factory=list)
@@ -869,6 +963,77 @@ class RedefineResult:
     # disabled or nothing was redefined). Same shape as the pipeline
     # tail's intent_backfill payload.
     intent_backfill: dict[str, Any] | None = None
+
+
+def _normalize_definition_text(text: str) -> str:
+    """Collapse whitespace for same-frame duplicate comparison."""
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _frame_already_has_definition(
+    entry: OntologyEntry,
+    text: str,
+    context_id: str | None,
+) -> bool:
+    """True if `text` is already present under the same frame (context_id)."""
+    needle = _normalize_definition_text(text)
+    if not needle:
+        return False
+    for definition in entry.definitions:
+        if definition.context_id != context_id:
+            continue
+        if _normalize_definition_text(definition.text) == needle:
+            return True
+    return False
+
+
+def _record_redefine_audit(
+    db: Database,
+    *,
+    entry: OntologyEntry,
+    prompt: str,
+    response_text: str,
+    model: str,
+    verdict: RedefineVerdict,
+    outcome: str,
+) -> str:
+    """Write decision_log + agent_exchanges for a rem_redefine call; return id."""
+    decision_log_id = str(uuid4())
+    source_document_id = (
+        entry.source_document_ids[0] if entry.source_document_ids else ""
+    )
+    DecisionLogRepository(db).insert(
+        DecisionLogEntry(
+            decision_log_id=decision_log_id,
+            term=entry.canonical_term,
+            source_document_id=source_document_id,
+            messages=[
+                DebateMessage(
+                    iteration=1,
+                    role="rem_redefine",
+                    content=verdict.rationale,
+                    confidence=verdict.confidence,
+                    model=model,
+                )
+            ],
+            final_confidence=verdict.confidence,
+            iterations_used=1,
+            outcome=outcome,
+            resulting_mpl_labels=[entry.mpl_label],
+        )
+    )
+    AgentExchangeRepository(db).insert(
+        AgentExchange(
+            decision_log_id=decision_log_id,
+            iteration=1,
+            role="rem_redefine",
+            model=model or "unknown",
+            prompt=prompt,
+            response=response_text,
+            confidence=verdict.confidence,
+        )
+    )
+    return decision_log_id
 
 
 def stale_entries_with_inconsistent_audit(
@@ -1080,8 +1245,15 @@ def redefine_stale_entry(
 ) -> RedefineVerdict | None:
     """Ask `adapter` for a refreshed definition; append + clear stale on success.
 
-    Returns the verdict on success, None when confidence is below
-    `min_confidence` (the new definition is not written).
+    Returns the verdict on success (including no-op same-frame redefines),
+    None when confidence is below `min_confidence` (nothing is written).
+
+    Same-frame no-ops (model re-derives text already present under the
+    resolved frame) clear stale and refresh `updated_at` without
+    appending a duplicate definition and without cascading to
+    dependents (review H1/H2). Every successful redefine records a
+    decision_log row and links it from the new definition when one is
+    written (review H3).
     """
     prompt = build_redefine_prompt(
         entry, db, style_overlay, available_contexts=available_contexts,
@@ -1113,7 +1285,51 @@ def redefine_stale_entry(
         if ctx is not None:
             context_id = ctx.context_id
 
+    model_name = response.model or "unknown"
     now = _utcnow()
+
+    # H1/H2: if the model re-derived text already present in this frame,
+    # do not append a duplicate and do not cascade staleness.
+    if _frame_already_has_definition(
+        entry, verdict.new_definition, context_id
+    ):
+        decision_log_id = _record_redefine_audit(
+            db,
+            entry=entry,
+            prompt=prompt,
+            response_text=response.text,
+            model=model_name,
+            verdict=verdict,
+            outcome="accepted",
+        )
+        db.ontology_entries.update_one(
+            {"_id": entry.mpl_label},
+            {"$set": {"updated_at": now}},
+        )
+        clear_stale(db, entry.mpl_label)
+        log.info(
+            "redefine: %s no-op (same-frame text already present); "
+            "cleared stale without append/cascade",
+            entry.mpl_label,
+        )
+        return RedefineVerdict(
+            new_definition=verdict.new_definition,
+            confidence=verdict.confidence,
+            rationale=verdict.rationale,
+            context_name=verdict.context_name,
+            noop=True,
+            decision_log_id=decision_log_id,
+        )
+
+    decision_log_id = _record_redefine_audit(
+        db,
+        entry=entry,
+        prompt=prompt,
+        response_text=response.text,
+        model=model_name,
+        verdict=verdict,
+        outcome="accepted",
+    )
     db.ontology_entries.update_one(
         {"_id": entry.mpl_label},
         {
@@ -1125,8 +1341,8 @@ def redefine_stale_entry(
                     # so the audit trail names the author (operator
                     # request 2026-06-12; the in-session frontier
                     # redefines exposed the gap).
-                    "model_used": f"rem_redefine ({response.model})",
-                    "decision_log_id": None,
+                    "model_used": f"rem_redefine ({model_name})",
+                    "decision_log_id": decision_log_id,
                     "context_id": context_id,
                     # Single-model verdict, not multi-agent agreement —
                     # consensus_score is reserved for debate output.
@@ -1138,11 +1354,18 @@ def redefine_stale_entry(
         },
     )
     update_references(db, entry.mpl_label)
-    # A redefinition changes meaning downstream too: dependents that
-    # reference this entry must be re-evaluated against the new sense.
+    # A redefinition changes meaning downstream only when the definition
+    # actually changed (no-op path returns early above).
     mark_dependents_stale(db, entry.mpl_label, change_type="definition_redefined")
     clear_stale(db, entry.mpl_label)
-    return verdict
+    return RedefineVerdict(
+        new_definition=verdict.new_definition,
+        confidence=verdict.confidence,
+        rationale=verdict.rationale,
+        context_name=verdict.context_name,
+        noop=False,
+        decision_log_id=decision_log_id,
+    )
 
 
 def redefine_pending_stale(
@@ -1196,6 +1419,23 @@ def redefine_pending_stale(
             )
             continue
 
+        if verdict.noop:
+            result.items_noop += 1
+            result.verdicts.append({
+                "mpl_label": entry.mpl_label,
+                "canonical_term": entry.canonical_term,
+                "confidence": verdict.confidence,
+                "rationale": verdict.rationale,
+                "new_definition": verdict.new_definition,
+                "noop": True,
+                "decision_log_id": verdict.decision_log_id,
+            })
+            log.info(
+                "redefine: %s no-op cleared (conf %.1f)",
+                entry.mpl_label, verdict.confidence,
+            )
+            continue
+
         result.items_redefined += 1
         result.verdicts.append({
             "mpl_label": entry.mpl_label,
@@ -1203,13 +1443,17 @@ def redefine_pending_stale(
             "confidence": verdict.confidence,
             "rationale": verdict.rationale,
             "new_definition": verdict.new_definition,
+            "noop": False,
+            "decision_log_id": verdict.decision_log_id,
         })
         log.info(
             "redefine: %s rewritten and cleared (conf %.1f)",
             entry.mpl_label, verdict.confidence,
         )
 
-    redefined_labels = {v["mpl_label"] for v in result.verdicts}
+    redefined_labels = {
+        v["mpl_label"] for v in result.verdicts if not v.get("noop")
+    }
     if intent_backfill and redefined_labels:
         from mahalath.intents import backfill_intents
         ib = backfill_intents(

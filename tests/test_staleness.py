@@ -440,7 +440,18 @@ def test_redefine_cascades_dependents(mongo_db) -> None:
     )
     verdict = redefine_stale_entry(entry, mongo_db, adapter, min_confidence=6.0)
     assert verdict is not None
-    assert OntologyEntryRepository(mongo_db).get("MPL-001").is_stale is False
+    assert verdict.noop is False
+    assert verdict.decision_log_id is not None
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.is_stale is False
+    # H3: appended definition links to the decision log.
+    assert stored.definitions[-1].decision_log_id == verdict.decision_log_id
+    assert mongo_db.decision_log.find_one(
+        {"decision_log_id": verdict.decision_log_id}
+    ) is not None
+    assert mongo_db.agent_exchanges.find_one(
+        {"decision_log_id": verdict.decision_log_id}
+    ) is not None
     # Dependents that referenced the redefined label must now be stale.
     beta = OntologyEntryRepository(mongo_db).get("MPL-002")
     gamma = OntologyEntryRepository(mongo_db).get("MPL-003")
@@ -449,6 +460,85 @@ def test_redefine_cascades_dependents(mongo_db) -> None:
     assert any(
         r.get("change_type") == "definition_redefined" for r in beta.stale_reasons
     )
+
+
+def test_redefine_noop_same_frame_skips_append_and_cascade(mongo_db) -> None:
+    """H1/H2/M2: identical same-frame text clears stale without write/cascade."""
+    import json
+
+    from mahalath.adapters import MockAdapter
+    from mahalath.db.repositories import OntologyEntryRepository
+    from mahalath.staleness import redefine_stale_entry, update_references
+
+    same = "alpha is the foundational sense"
+    _seed(mongo_db, "MPL-001", "alpha", definitions=[same])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["MPL-001 reference."])
+    update_references(mongo_db, "MPL-002")
+
+    mongo_db.ontology_entries.update_one(
+        {"_id": "MPL-001"},
+        {
+            "$set": {"is_stale": True},
+            "$push": {"stale_reasons": {"change_type": "audit_inconsistent"}},
+        },
+    )
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    # Whitespace-variant of the existing definition → still a no-op.
+    adapter = MockAdapter(
+        default_response=json.dumps(
+            {
+                "new_definition": "  alpha is the   foundational sense  ",
+                "confidence": 9.0,
+                "rationale": "unchanged after re-derivation",
+            }
+        )
+    )
+    verdict = redefine_stale_entry(entry, mongo_db, adapter, min_confidence=6.0)
+    assert verdict is not None
+    assert verdict.noop is True
+    assert verdict.decision_log_id is not None
+
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.is_stale is False
+    assert stored.stale_reasons == []
+    assert len(stored.definitions) == 1  # no duplicate append
+    # Cascade must not fire.
+    beta = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert beta.is_stale is False
+    # Audit row still written for the redefine attempt.
+    assert mongo_db.decision_log.find_one(
+        {"decision_log_id": verdict.decision_log_id}
+    ) is not None
+
+
+def test_dedupe_identical_frame_definitions(mongo_db) -> None:
+    """F2: drop later exact-duplicate definitions within one frame."""
+    from mahalath.staleness import dedupe_identical_frame_definitions
+
+    _seed(
+        mongo_db,
+        "MPL-001",
+        "alpha",
+        definitions=[
+            "same text in structural",
+            "different text",
+            "same text in structural",  # duplicate of first (both context_id None)
+        ],
+    )
+    dry = dedupe_identical_frame_definitions(mongo_db, dry_run=True)
+    assert dry.entries_with_duplicates == 1
+    assert dry.definitions_removed == 1
+    # Dry-run leaves data alone.
+    assert len(OntologyEntryRepository(mongo_db).get("MPL-001").definitions) == 3
+
+    applied = dedupe_identical_frame_definitions(mongo_db, dry_run=False)
+    assert applied.definitions_removed == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert len(stored.definitions) == 2
+    assert [d.text for d in stored.definitions] == [
+        "same text in structural",
+        "different text",
+    ]
 
 
 def test_redefine_appends_def_and_clears_stale(mongo_db, mongo_config) -> None:

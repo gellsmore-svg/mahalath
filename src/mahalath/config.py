@@ -51,7 +51,9 @@ class AgentRolesConfig(BaseModel):
 
 
 class RuntimeConfig(BaseModel):
-    model_adapter: str = "ollama_cli"
+    # Prefer the HTTP path: no `ollama` binary on PATH required (review F6).
+    # Override to ollama_cli / hoglah / claude_api as needed.
+    model_adapter: str = "ollama_http"
     model: str = "gemma4:e2b"
     agents: AgentRolesConfig = Field(default_factory=AgentRolesConfig)
     max_iterations_per_term: int = 50
@@ -79,12 +81,12 @@ class RuntimeConfig(BaseModel):
     # vocabulary, "term X in this corpus means Y" overrides. None means
     # no overlay; default behaviour matches Stage 1.
     style_overlay_path: str | None = None
-    # Adapter used by the /api/chat endpoint. Defaults to ollama_cli
-    # so a fresh install works end-to-end without an external API key.
-    # Override to "claude_api" (and set ANTHROPIC_API_KEY) for
-    # frontier-quality answers if the operator accepts the per-request
-    # cost.
-    chat_adapter: str = "ollama_cli"
+    # Adapter used by the /api/chat endpoint. Defaults to ollama_http
+    # so a fresh install works end-to-end without an `ollama` binary on
+    # PATH (only the HTTP API needs to be reachable). Override to
+    # "claude_api" (and set ANTHROPIC_API_KEY) for frontier-quality
+    # answers if the operator accepts the per-request cost.
+    chat_adapter: str = "ollama_http"
     # Resolved from PATH by default so a fresh install is portable; point it at
     # a specific binary (e.g. a WSL-mounted ollama.exe) via config.yaml or the
     # OLLAMA_EXECUTABLE env var. The HTTP path (ollama_base_url) is preferred.

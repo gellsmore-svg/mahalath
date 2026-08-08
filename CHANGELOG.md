@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-08
+
+Review action for `docs/review-2026-08-08.md` (1.2.0 baseline).
+
+### Fixed
+- **H1/H2 / F1**: REM redefine no longer appends a duplicate definition or
+  cascades staleness when the model re-derives text already present in the
+  same frame (whitespace-normalised). Stale is still cleared.
+- **H3 / F3**: `rem_redefine` writes a `decision_log` + `agent_exchanges` row
+  and links `decision_log_id` on the appended definition (audit trail for
+  meaning changes).
+- **F4**: argparse subcommand errors print that subcommand's usage instead of
+  the top-level command list (`_SubcommandParser`).
+- **F5**: `list-ontology` accepts `--limit` and `--skip`.
+- **F6**: default `model_adapter` / `chat_adapter` is `ollama_http` (no
+  `ollama` binary on PATH required).
+
+### Added
+- **F2**: `dedupe_identical_frame_definitions` + CLI
+  `mahalath dedupe-definitions [--apply]` for one-off cleanup of exact
+  same-frame duplicate definitions.
+- Tests: no-op redefine (no append, no cascade), decision_log link on
+  redefine, frame dedupe dry-run/apply.
+
+### Changed
+- **M1**: README clarifies that `consensus_score` is populated by the debate
+  path only; REM redefine and operator definitions leave it null by design.
+- **M4**: PEP 639 license metadata (`license = "Apache-2.0"`,
+  `license-files = ["LICENSE"]`).
+
 ## [1.2.0] — 2026-08-07
 
 ### Added
