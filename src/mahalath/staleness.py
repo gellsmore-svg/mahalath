@@ -1358,6 +1358,18 @@ def redefine_stale_entry(
     # actually changed (no-op path returns early above).
     mark_dependents_stale(db, entry.mpl_label, change_type="definition_redefined")
     clear_stale(db, entry.mpl_label)
+    try:
+        from mahalath.detailed import enrich_definition_with_detail
+
+        enrich_definition_with_detail(
+            db,
+            entry.mpl_label,
+            adapter=adapter,
+            definition_index=-1,
+            style_overlay=style_overlay,
+        )
+    except Exception:  # noqa: BLE001 — detailed expansion is best-effort
+        pass
     return RedefineVerdict(
         new_definition=verdict.new_definition,
         confidence=verdict.confidence,

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-08-10
+
+### Added
+- **Detailed definition expositions:** each `DefinitionVersion` may carry
+  `detailed_text` — a longer description of the *same* sense as the debated
+  short `text` (not a second frame). Generated best-effort after debate accept
+  and REM redefine when `runtime.generate_detailed_definitions` is true
+  (default). Surfaces in retrieval `Meaning.detailed_description`, glossary
+  MD/JSON, chat context, and the web entry page.
+- `mahalath backfill-detailed [--apply] [--overwrite] [--max-items N]` to fill
+  or regenerate detailed text on existing corpus definitions.
+- Module `mahalath.detailed` (prompt, parse, enrich, backfill).
+
 ## [1.3.0] — 2026-08-08
 
 Review action for `docs/review-2026-08-08.md` (1.2.0 baseline).

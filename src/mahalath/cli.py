@@ -385,6 +385,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Override adapter default model.",
     )
 
+    backfill_detailed_parser = subcommands.add_parser(
+        "backfill-detailed",
+        help="Generate longer detailed_text expositions for definitions "
+        "that only have the short debated text. Defaults to dry-run; "
+        "pass --apply to write.",
+    )
+    backfill_detailed_parser.add_argument(
+        "--max-items", type=int, default=50,
+        help="Maximum definitions to generate this run (default 50).",
+    )
+    backfill_detailed_parser.add_argument(
+        "--apply", action="store_true",
+        help="Write detailed_text (otherwise dry-run + print).",
+    )
+    backfill_detailed_parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Regenerate even when detailed_text is already present.",
+    )
+    backfill_detailed_parser.add_argument(
+        "--adapter", default=None,
+        help="Adapter (default: runtime.model_adapter).",
+    )
+    backfill_detailed_parser.add_argument(
+        "--model", default=None,
+        help="Override adapter default model.",
+    )
+
     subcommands.add_parser(
         "list-stale",
         help="List ontology entries flagged as stale (upstream changed).",
@@ -823,6 +850,16 @@ def main(argv: list[str] | None = None) -> int:
             max_items=args.max_items,
             apply_flag=args.apply,
             passes_override=args.passes,
+            adapter_name=args.adapter,
+            model_override=args.model,
+        )
+
+    if args.command == "backfill-detailed":
+        return _backfill_detailed(
+            config,
+            max_items=args.max_items,
+            apply_flag=args.apply,
+            overwrite=args.overwrite,
             adapter_name=args.adapter,
             model_override=args.model,
         )
@@ -1289,7 +1326,7 @@ def _run_pipeline_on_document(
             continue
 
         persist_result = persist_debate_result(
-            debate_result, db, config.runtime
+            debate_result, db, config.runtime, adapter=adapter,
         )
         term_record: dict[str, Any] = {
             "term": candidate.term,
@@ -1776,6 +1813,66 @@ def _seed_intents(config: AppConfig, *, dry_run: bool) -> int:
             {"ok": True, "dry_run": dry_run, **result.to_dict()}, indent=2,
         ))
         return 0
+    finally:
+        close_all()
+
+
+def _backfill_detailed(
+    config: AppConfig,
+    *,
+    max_items: int,
+    apply_flag: bool,
+    overwrite: bool,
+    adapter_name: str | None,
+    model_override: str | None,
+) -> int:
+    import logging
+    from mahalath.adapters import make_adapter
+    from mahalath.adapters.base import AdapterError
+    from mahalath.db import close_all, get_database
+    from mahalath.detailed import backfill_detailed_definitions
+    from mahalath.glossary import refresh_glossary
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    effective_adapter = adapter_name or config.runtime.model_adapter
+    try:
+        adapter = make_adapter(effective_adapter, config)
+    except AdapterError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 12
+
+    if model_override:
+        adapter.default_model = model_override
+
+    try:
+        db = get_database(config)
+        result = backfill_detailed_definitions(
+            config, db, adapter,
+            max_items=max_items,
+            overwrite=overwrite,
+            apply=apply_flag,
+        )
+        if apply_flag and result.written > 0:
+            try:
+                refresh_glossary(config, db)
+            except Exception as exc:  # pragma: no cover
+                print(f"mahalath: glossary refresh warning: {exc}", file=sys.stderr)
+        print(json.dumps({
+            "ok": True,
+            "dry_run": not apply_flag,
+            "entries_scanned": result.entries_scanned,
+            "definitions_missing": result.definitions_missing,
+            "written": result.written,
+            "skipped": result.skipped,
+            "errored": result.errored,
+            "errors": result.errors[:20],
+            "details": result.details[:50],
+        }, indent=2))
+        return 0 if result.errored == 0 else 1
     finally:
         close_all()
 

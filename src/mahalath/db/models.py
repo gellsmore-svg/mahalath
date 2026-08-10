@@ -143,9 +143,17 @@ class DefinitionVersion(_MahalathModel):
                              `consensus_score` (definitional agreement)
                              and from any future effectiveness measure
                              (perlocution; out of scope, ADR-026).
+
+    `detailed_text` (optional) is a longer exposition of the *same*
+    sense as `text` — pedagogical / retrieval depth, not a second
+    meaning. The debated `text` stays the precise sense for identity
+    and consensus; `detailed_text` elaborates it. None on legacy rows
+    and when generation is skipped or fails (best-effort).
     """
 
     text: str
+    # Longer exposition of the same sense as `text` (not a second frame).
+    detailed_text: str | None = None
     language: str = "en"
     model_used: str | None = None
     decision_log_id: str | None = None

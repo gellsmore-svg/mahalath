@@ -81,6 +81,11 @@ class RuntimeConfig(BaseModel):
     # vocabulary, "term X in this corpus means Y" overrides. None means
     # no overlay; default behaviour matches Stage 1.
     style_overlay_path: str | None = None
+    # After a definition is accepted (debate / redefine), generate a
+    # longer `detailed_text` exposition of the same sense. Best-effort;
+    # failure leaves detailed_text null. Disable to skip the extra model
+    # call on write paths (backfill-detailed still works offline).
+    generate_detailed_definitions: bool = True
     # Adapter used by the /api/chat endpoint. Defaults to ollama_http
     # so a fresh install works end-to-end without an `ollama` binary on
     # PATH (only the HTTP API needs to be reachable). Override to

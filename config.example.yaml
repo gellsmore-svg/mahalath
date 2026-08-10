@@ -19,6 +19,9 @@ runtime:
   # only when you want to shell out to a local `ollama` executable.
   # llama-cpp-python remains an optional future path.
   model_adapter: ollama_http
+  # After each accepted definition (debate / redefine), generate a longer
+  # detailed_text exposition of the same sense (best-effort extra model call).
+  # generate_detailed_definitions: true
   # gemma4:e2b chosen as Stage 1 default after a 2026-06-06 comparison
   # against gemma3:1b: 4.8x faster end-to-end (24s vs 1m58s on the
   # agonist-intro smoke), 1 iteration to acceptance vs 22-23, and

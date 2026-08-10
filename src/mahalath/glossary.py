@@ -256,6 +256,10 @@ def _render_definition(
     definition: Any, ctx_names: dict[str, str] | None = None
 ) -> list[str]:
     lines = [f"> {definition.text}"]
+    detailed = getattr(definition, "detailed_text", None)
+    if detailed:
+        lines.append("")
+        lines.append(detailed.strip())
     attribution_parts = []
     if definition.model_used:
         attribution_parts.append(f"from `{definition.model_used}`")
@@ -306,6 +310,7 @@ def _build_json_payload(
                 "definitions": [
                     {
                         "text": d.text,
+                        "detailed_text": d.detailed_text,
                         "language": d.language,
                         "model_used": d.model_used,
                         "decision_log_id": d.decision_log_id,

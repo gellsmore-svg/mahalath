@@ -139,6 +139,9 @@ button.rollback { border-color: var(--muted); color: var(--muted); }
 .chatmeta { font-size: 0.85em; color: var(--muted); margin-top: 0.5em; }
 .definition { font-style: italic; background: var(--surface); border-left: 4px solid var(--accent);
               padding: 0.7em 1em; margin: 0.6em 0; border-radius: 0 8px 8px 0; }
+.definition-detailed { font-style: normal; background: var(--surface); border-left: 4px solid var(--line);
+              padding: 0.7em 1em; margin: 0.4em 0 0.6em; border-radius: 0 8px 8px 0;
+              line-height: 1.55; white-space: pre-wrap; }
 .attribution { font-size: 0.85em; color: var(--muted); margin-top: 0.2em; }
 .reason { font-size: 0.95em; background: var(--surface); padding: 0.6em 0.9em;
           border-left: 3px solid var(--line); margin: 0.4em 0; border-radius: 0 8px 8px 0; }
@@ -370,8 +373,15 @@ def _register_routes(app: FastAPI) -> None:
             if badges:
                 intent_html = f'<p class="intents">deployed to: {badges}</p>' \
                     if d.intent_tags else f'<p class="intents">{badges}</p>'
+            detailed_html = ""
+            if getattr(d, "detailed_text", None):
+                detailed_html = (
+                    f'<div class="definition-detailed">'
+                    f'{escape(d.detailed_text)}</div>'
+                )
             return f"""
 <div class="definition">{escape(d.text)}</div>
+{detailed_html}
 <p class="attribution">— from <code>{escape(d.model_used or "?")}</code> at {_iso(d.created_at)}</p>
 {intent_html}"""
 

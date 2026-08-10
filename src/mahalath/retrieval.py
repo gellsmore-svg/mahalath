@@ -146,6 +146,8 @@ class Meaning:
     intent_tags: list[str] = field(default_factory=list)
     intentionality: str | None = None
     intent_confidence: float | None = None
+    # Longer exposition of the same sense as `description` (optional).
+    detailed_description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -358,6 +360,7 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
             ],
             intentionality=d.intentionality,
             intent_confidence=d.intent_confidence,
+            detailed_description=d.detailed_text,
         ))
     if keep_ctx_id is not None and not meanings:
         return None  # frame exists globally but this entry has no def in it
@@ -578,6 +581,11 @@ def render_entry_lines(
                     lines.append(f"      [{m.model_used or '?'}] {m.description}")
                 else:
                     lines.append(f"      {m.description}")
+                if m.detailed_description:
+                    # Indented prose block — same sense, more depth.
+                    for para in m.detailed_description.strip().splitlines():
+                        if para.strip():
+                            lines.append(f"        {para.strip()}")
                 # Intent annotation (deployment metadata, ADR-024) —
                 # rendered as an aside so it never reads as semantics.
                 extras = []

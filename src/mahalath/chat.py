@@ -254,6 +254,7 @@ def _render_entry_for_chat(
             ],
             intentionality=d.intentionality,
             intent_confidence=d.intent_confidence,
+            detailed_description=d.detailed_text,
         ))
 
     return render_entry_lines(

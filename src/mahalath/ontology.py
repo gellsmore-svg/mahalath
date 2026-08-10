@@ -65,12 +65,17 @@ def persist_debate_result(
     parent_label: str | None = None,
     aliases: list[str] | None = None,
     extra_relations: list[dict[str, Any]] | None = None,
+    adapter=None,
 ) -> PersistResult:
     """Persist a DebateResult into the ontology and audit collections.
 
     Caller may pin a `parent_label` (must be an existing accepted entry)
     or leave it None to assign at the top level. `aliases` and
     `extra_relations` flow through to the OntologyEntry record.
+
+    When ``adapter`` is provided and ``runtime.generate_detailed_definitions``
+    is true, a longer ``detailed_text`` is generated best-effort for the
+    new definition after accept.
     """
     decision_repo = DecisionLogRepository(db)
     exchange_repo = AgentExchangeRepository(db)
@@ -87,6 +92,14 @@ def persist_debate_result(
             _decision_log_entry(result, ACCEPTED, [mpl_label])
         )
         _persist_exchanges(result, exchange_repo)
+        _maybe_enrich_detailed(
+            result, db, runtime, mpl_label, definition_index=0, adapter=adapter,
+        )
+        # Reload so callers see detailed_text when generation succeeded.
+        if ontology_entry is not None:
+            refreshed = OntologyEntryRepository(db).get(mpl_label)
+            if refreshed is not None:
+                ontology_entry = refreshed
         return PersistResult(
             outcome=ACCEPTED,
             decision_log_id=result.decision_log_id,
@@ -188,6 +201,40 @@ def _write_accepted(
     retro_link_new_entry(db, mpl_label)
 
     return entry, mpl_label
+
+
+def _maybe_enrich_detailed(
+    result: DebateResult,
+    db: Database,
+    runtime: RuntimeConfig,
+    mpl_label: str,
+    *,
+    definition_index: int = -1,
+    adapter=None,
+) -> None:
+    """Best-effort detailed_text on the just-written definition."""
+    if not getattr(runtime, "generate_detailed_definitions", True):
+        return
+    if adapter is None:
+        return
+    try:
+        from mahalath.detailed import enrich_definition_with_detail
+        from mahalath.style import load_style_overlay
+        from mahalath.config import AppConfig
+
+        # load_style_overlay expects AppConfig; build a minimal shell.
+        config = AppConfig(runtime=runtime)
+        style = load_style_overlay(config)
+        enrich_definition_with_detail(
+            db,
+            mpl_label,
+            adapter=adapter,
+            definition_index=definition_index,
+            style_overlay=style,
+            source_snippet=result.context or None,
+        )
+    except Exception:  # noqa: BLE001 — never break accept
+        pass
 
 
 def _assign_label(
@@ -393,6 +440,22 @@ def redebate_entry(
         },
     )
     update_references(db, mpl_label)
+    if getattr(runtime, "generate_detailed_definitions", True):
+        try:
+            from mahalath.detailed import enrich_definition_with_detail
+            from mahalath.style import load_style_overlay
+            from mahalath.config import AppConfig
+
+            enrich_definition_with_detail(
+                db,
+                mpl_label,
+                adapter=adapter,
+                definition_index=-1,
+                style_overlay=load_style_overlay(AppConfig(runtime=runtime)),
+                source_snippet=context or None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
     # The entry's definitional content just changed: propagate staleness
     # to dependents AND to any cross-language mapping on this endpoint
     # (ADR-029 — redefining an endpoint flags its mappings for re-audit).

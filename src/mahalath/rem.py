@@ -108,7 +108,7 @@ def rem_review(
 
         if debate_result.outcome == "accepted":
             persist_result = persist_debate_result(
-                debate_result, db, config.runtime
+                debate_result, db, config.runtime, adapter=adapter,
             )
             # Remove the queue row — the term is now ontology.
             db.undecided_queue.delete_one(
