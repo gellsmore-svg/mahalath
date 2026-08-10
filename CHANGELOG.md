@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Design (ADR-033):** scholarly layer + same-document lesson memory —
+  [`docs/scholarly-layer.md`](docs/scholarly-layer.md). Three prose layers per
+  sense; debate transcripts remain ground truth; distilled lessons may only be
+  retrieved for the **same `source_document_id`** (not other documents/corpora).
+  Implementation not started.
+
 ## [1.4.0] — 2026-08-10
 
 ### Added

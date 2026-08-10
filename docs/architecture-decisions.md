@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-Last updated: 2026-06-13
+Last updated: 2026-08-10
 
 An **Architecture Decision Record** (the `ADR-NNN` rows below) is one
 design decision and the reasoning behind it. The `ADR` prefix is kept

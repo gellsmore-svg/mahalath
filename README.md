@@ -254,9 +254,21 @@ topics/queues/streams. Install the broker client with the matching extra:
 
 - **Self-analysis is read-only and file-snapshotted** — the effectiveness layer aggregates the audit trails it reports on but can never write to them (ADR-027).
 
-The full decision record (30 ADRs + open questions) lives in `docs/architecture-decisions.md`; the retrieval design in `docs/retrieval-spec.md`; the intent extension in `docs/intent-extension-{discussion,evaluation}.md`.
+The full decision record (ADRs + open questions) lives in
+[`docs/architecture-decisions.md`](docs/architecture-decisions.md); the retrieval
+design in [`docs/retrieval-spec.md`](docs/retrieval-spec.md); the intent
+extension in `docs/intent-extension-{discussion,evaluation}.md`.
 
-A point-in-time functional + code review of 1.2.0 is in [`docs/review-2026-08-08.md`](docs/review-2026-08-08.md). Findings H1–H3 / F1–F6 / M1 / M4 are actioned in **1.3.0** (no-op redefine skip, decision_log on rem_redefine, `dedupe-definitions`, `list-ontology --limit`, `ollama_http` default, PEP 639 license).
+**Scholarly layer + same-document reasoning memory (design, ADR-033):**
+[`docs/scholarly-layer.md`](docs/scholarly-layer.md) — three prose layers per
+sense (`text` / `detailed_text` / scholarly), full debate transcripts as ground
+truth, distilled lesson cards injected into later debates. **Past thinking is
+scoped to the same source document only** (not other corpora). Implementation
+pending.
+
+A point-in-time functional + code review of 1.2.0 is in
+[`docs/review-2026-08-08.md`](docs/review-2026-08-08.md). Findings H1–H3 / F1–F6 /
+M1 / M4 are actioned in **1.3.0**; detailed expositions shipped in **1.4.0**.
 
 ## Status
 
