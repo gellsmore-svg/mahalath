@@ -94,7 +94,44 @@ cp my-source.md input/
 .venv/bin/mahalath retrieve "field" --format text --budget 800
 .venv/bin/mahalath subtree MPL-001 --depth 2
 .venv/bin/mahalath propose-term "lattice" --context "…source snippet…" --near MPL-004
+
+# 7. See how a term was arrived at, and decide what the system couldn't
+.venv/bin/mahalath show-decision MPL-001            # every conversation behind it
+.venv/bin/mahalath show-decision MPL-001 --verbose  # including the prompts sent
+.venv/bin/mahalath needs-review                     # only terms still stuck after retries
+.venv/bin/mahalath accept-undecided <decision-log-id> --note "close enough"
 ```
+
+### Understanding how a term was produced
+
+Every model call that contributes prose to a term — the debate behind the short
+definition, and the expansion behind `detailed_text` — records the full
+conversation (`decision_log` + `agent_exchanges`), linked from the definition
+(ADR-034). Read it with `mahalath show-decision <MPL-label|decision-log-id>`, or
+from the entry page in the web UI, which lists every conversation and links to a
+view of each.
+
+### Review only what is actually stuck
+
+The operator is asked about a term only once the system has finished trying
+(ADR-037): below `runtime.confidence_threshold` it re-debates overnight, and it
+surfaces after two retries if it is still short. `conflict` and
+`moderator_block` — where the agents disagree on whether a term holds one
+meaning or two — surface immediately, because more recursion does not settle
+them. `mahalath needs-review` and the `/undecided` page show that set, with
+accept/reject writing to the audit chain.
+
+### Comparing runs over related material
+
+`mahalath link-documents <document-id>` asks the model whether an incoming
+document is related to one already processed — a revision, translation, excerpt
+or shared material — and records the link. This is **not** deduplication: the
+document is processed in full and the original's terms are untouched.
+`--correspond` then matches terms across the pair, and
+`mahalath compare-documents <link-id>` reports what differs — shared terms,
+terms unique to each side, and definitions that changed. That is how you answer
+whether a different model or a changed process improved the output (ADR-036).
+Opt in at ingest with `runtime.link_related_documents`.
 
 ### Cross-language mappings (multilingual lexicons)
 
@@ -269,6 +306,12 @@ pending.
 A point-in-time functional + code review of 1.2.0 is in
 [`docs/review-2026-08-08.md`](docs/review-2026-08-08.md). Findings H1–H3 / F1–F6 /
 M1 / M4 are actioned in **1.3.0**; detailed expositions shipped in **1.4.0**.
+
+A follow-up review of 1.4.0 `detailed_text` and the ADR-033 scholarly design is in
+[`docs/review-2026-08-10-detailed-and-scholarly.md`](docs/review-2026-08-10-detailed-and-scholarly.md).
+It also records four operator requirements from 2026-08-10: viewable conversation
+history per prose layer, no backfill for new definitions, related-document term
+traceability, and operator review gated on confidence after recursion.
 
 ## Status
 

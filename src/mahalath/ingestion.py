@@ -24,10 +24,12 @@ layer wraps it with config loading, error formatting, and exit codes.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pymongo.database import Database
 
@@ -39,6 +41,8 @@ from mahalath.tracing import DOCUMENT_INGESTED, get_witness
 
 class IngestionError(Exception):
     """Raised when ingestion fails for a reason that should surface to the operator."""
+
+log = logging.getLogger("mahalath.ingestion")
 
 
 @dataclass
@@ -85,7 +89,15 @@ def ingest_one(
     project_root: Path | None = None,
     style_overlay_path: str | None = None,
     language: str = "en",
+    adapter: Any = None,
 ) -> IngestionResult:
+    """Ingest one document. Full processing — never a partial or skipped pass.
+
+    When ``adapter`` is given and ``runtime.link_related_documents`` is on, the
+    new document is judged against those already processed and any relationship
+    is recorded (ADR-036). That link is provenance for comparison; it does NOT
+    skip work, and it never modifies the related document's terms.
+    """
     if not source_path.exists():
         raise IngestionError(f"Source file not found: {source_path}")
     if not source_path.is_file():
@@ -140,6 +152,24 @@ def ingest_one(
         title=record.title,
         char_count=record.char_count,
     )
+
+    # ADR-036: record how this document relates to what is already held, so a
+    # later run over related material can be compared against this one. Purely
+    # additive and best-effort — a failure here must not fail an ingest.
+    if adapter is not None and getattr(
+        config.runtime, "link_related_documents", False
+    ):
+        try:
+            from mahalath.relatedness import find_related_documents
+
+            links = find_related_documents(db, record.document_id, adapter)
+            if links:
+                log.info(
+                    "ingest: %s linked to %d related document(s)",
+                    record.document_id, len(links),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.info("ingest: relatedness check skipped — %s", exc)
 
     return IngestionResult(
         duplicate=False,

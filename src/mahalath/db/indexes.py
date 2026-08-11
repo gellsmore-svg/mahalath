@@ -151,6 +151,19 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.entry_embeddings.create_index("language"),
         db.entry_embeddings.create_index("model"),
         db.entry_embeddings.create_index([("computed_at", DESCENDING)]),
+        # ADR-036: related documents and the term correspondences between
+        # them. Both directions are queried, so index both ends.
+        db.document_links.create_index("link_id", unique=True),
+        db.document_links.create_index("document_id"),
+        db.document_links.create_index("related_document_id"),
+        db.term_correspondences.create_index("correspondence_id", unique=True),
+        db.term_correspondences.create_index("link_id"),
+        db.term_correspondences.create_index("mpl_label"),
+        db.term_correspondences.create_index("related_mpl_label"),
+        # ADR-037: an operator decision on a stuck term is as auditable as a
+        # model one.
+        db.operator_decisions.create_index("decision_log_id"),
+        db.operator_decisions.create_index([("decided_at", DESCENDING)]),
     ]
 
     return created

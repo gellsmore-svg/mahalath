@@ -86,6 +86,12 @@ class RuntimeConfig(BaseModel):
     # failure leaves detailed_text null. Disable to skip the extra model
     # call on write paths (backfill-detailed still works offline).
     generate_detailed_definitions: bool = True
+    # ADR-036: on ingest, ask the model whether the incoming document is
+    # related to one already processed, and record the link. This is
+    # provenance for COMPARISON — the document is still processed in full and
+    # the related document's terms are never touched. Costs one model call per
+    # candidate document, so it is opt-in.
+    link_related_documents: bool = False
     # Adapter used by the /api/chat endpoint. Defaults to ollama_http
     # so a fresh install works end-to-end without an `ollama` binary on
     # PATH (only the HTTP API needs to be reachable). Override to

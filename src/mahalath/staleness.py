@@ -996,10 +996,16 @@ def _record_redefine_audit(
     model: str,
     verdict: RedefineVerdict,
     outcome: str,
+    triggering_document_id: str | None = None,
 ) -> str:
-    """Write decision_log + agent_exchanges for a rem_redefine call; return id."""
+    """Write decision_log + agent_exchanges for a rem_redefine call; return id.
+
+    Records the document that TRIGGERED the redefine when the caller knows it;
+    ``source_document_ids[0]`` is only a fallback and is wrong for an entry
+    evidenced by several documents (ADR-033 prerequisite).
+    """
     decision_log_id = str(uuid4())
-    source_document_id = (
+    source_document_id = triggering_document_id or (
         entry.source_document_ids[0] if entry.source_document_ids else ""
     )
     DecisionLogRepository(db).insert(
@@ -1242,8 +1248,15 @@ def redefine_stale_entry(
     style_overlay: str | None = None,
     min_confidence: float = 6.0,
     available_contexts: list[dict] | None = None,
+    triggering_document_id: str | None = None,
 ) -> RedefineVerdict | None:
     """Ask `adapter` for a refreshed definition; append + clear stale on success.
+
+    ``triggering_document_id`` is the document whose processing caused this
+    redefine. Pass it whenever it is known: 33 of the live corpus's entries
+    carry more than one source document, and falling back to
+    ``source_document_ids[0]`` records the wrong one — which would make
+    ADR-033's same-document scoping filter correctly over wrong data.
 
     Returns the verdict on success (including no-op same-frame redefines),
     None when confidence is below `min_confidence` (nothing is written).
@@ -1329,6 +1342,7 @@ def redefine_stale_entry(
         model=model_name,
         verdict=verdict,
         outcome="accepted",
+        triggering_document_id=triggering_document_id,
     )
     db.ontology_entries.update_one(
         {"_id": entry.mpl_label},
@@ -1359,17 +1373,28 @@ def redefine_stale_entry(
     mark_dependents_stale(db, entry.mpl_label, change_type="definition_redefined")
     clear_stale(db, entry.mpl_label)
     try:
-        from mahalath.detailed import enrich_definition_with_detail
+        from mahalath.detailed import (
+            enrich_definition_with_detail,
+            source_snippet_for_entry,
+        )
 
+        # The exposition prompt asks how the term is used in this corpus, so
+        # it needs corpus text; without it the model invents usage (ADR-035).
         enrich_definition_with_detail(
             db,
             entry.mpl_label,
             adapter=adapter,
             definition_index=-1,
             style_overlay=style_overlay,
+            source_snippet=source_snippet_for_entry(
+                db, entry, source_document_id=triggering_document_id
+            ),
+            source_document_id=triggering_document_id,
         )
-    except Exception:  # noqa: BLE001 — detailed expansion is best-effort
-        pass
+    except Exception as exc:  # noqa: BLE001 — detailed expansion is best-effort
+        log.info(
+            "detailed: expansion skipped for %s — %s", entry.mpl_label, exc
+        )
     return RedefineVerdict(
         new_definition=verdict.new_definition,
         confidence=verdict.confidence,
@@ -1417,6 +1442,10 @@ def redefine_pending_stale(
                 style_overlay=style_overlay,
                 min_confidence=min_confidence,
                 available_contexts=available_contexts or None,
+                # A stale-sweep redefine is not triggered by a document
+                # being processed, so there is no triggering document to
+                # claim; the audit falls back to the entry's own source.
+                triggering_document_id=None,
             )
         except (AdapterError, RedefineError) as exc:
             result.items_errored += 1

@@ -30,6 +30,7 @@ from pathlib import Path
 from pymongo.database import Database
 
 from mahalath.config import AppConfig
+from mahalath.db.models import DEBATE_OUTCOMES
 
 log = logging.getLogger("mahalath.analysis")
 
@@ -183,6 +184,11 @@ def _round(value: float | None, digits: int = 2) -> float | None:
 def _debate_stats(db: Database) -> DebateStats:
     stats = DebateStats()
     for row in db.decision_log.aggregate([
+        # Debates only. ADR-034 records prose expansions in this same
+        # collection so every layer's conversation is readable from one
+        # place; counting them here would inflate `total` and drag the
+        # acceptance rate toward a number that is not about debates.
+        {"$match": {"outcome": {"$in": sorted(DEBATE_OUTCOMES)}}},
         {"$group": {
             "_id": "$outcome",
             "n": {"$sum": 1},

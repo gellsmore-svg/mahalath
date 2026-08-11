@@ -212,9 +212,10 @@ def test_proposal_detail_404_on_missing(app_client) -> None:
 
 
 def test_undecided_renders_empty_state(app_client) -> None:
+    """ADR-037: the page is a review queue, not a dump of everything pending."""
     r = app_client.get("/undecided")
     assert r.status_code == 200
-    assert "queue is empty" in r.text
+    assert "nothing needs you right now" in r.text
 
 
 def test_documents_renders_empty_state(app_client) -> None:

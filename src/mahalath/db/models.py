@@ -149,11 +149,24 @@ class DefinitionVersion(_MahalathModel):
     meaning. The debated `text` stays the precise sense for identity
     and consensus; `detailed_text` elaborates it. None on legacy rows
     and when generation is skipped or fails (best-effort).
+
+    The exposition is a SEPARATE model call from the debate, so it
+    carries its own provenance (ADR-034): `detailed_model_used`,
+    `detailed_created_at`, and `detailed_decision_log_id` describe the
+    expansion, while `model_used` / `created_at` / `decision_log_id`
+    continue to describe the debate that produced `text`. Without this
+    split there is no way to tell which model wrote the prose, or to
+    read back the conversation that produced it.
     """
 
     text: str
     # Longer exposition of the same sense as `text` (not a second frame).
     detailed_text: str | None = None
+    # Provenance of the expansion call itself (ADR-034) — distinct from
+    # the debate provenance below.
+    detailed_model_used: str | None = None
+    detailed_created_at: datetime | None = None
+    detailed_decision_log_id: str | None = None
     language: str = "en"
     model_used: str | None = None
     decision_log_id: str | None = None
@@ -276,10 +289,26 @@ class DebateMessage(_MahalathModel):
     model: str | None = None
 
 
-class DecisionLogEntry(_MahalathModel):
-    """Per-term debate audit record.
+# Outcomes produced by an actual debate. Effectiveness statistics are
+# computed over these only, so non-debate model calls recorded in the
+# same collection (ADR-034) cannot distort acceptance rates.
+DEBATE_OUTCOMES: frozenset[str] = frozenset(
+    {"accepted", "rejected", "undecided", "split"}
+)
 
-    `outcome` is one of: accepted | rejected | undecided | split.
+# Non-debate outcomes: one model call recorded for auditability, not a
+# decision between agents.
+ELABORATED = "elaborated"  # detailed_text / scholarly prose expansion
+
+
+class DecisionLogEntry(_MahalathModel):
+    """Per-term audit record for a model call about a term.
+
+    `outcome` is one of the debate outcomes (accepted | rejected |
+    undecided | split) or a non-debate marker such as `elaborated`
+    (ADR-034: prose expansions are recorded here so the conversation
+    behind every prose layer is readable, but they are excluded from
+    debate statistics — see `DEBATE_OUTCOMES`).
     `resulting_mpl_labels` lists the MPL labels created by this debate
     (zero for rejected/undecided; one for plain accept; two for split).
     """

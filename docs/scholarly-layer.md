@@ -1,7 +1,29 @@
 # Scholarly layer + same-document reasoning memory
 
 **Status:** design accepted (ADR-033) · **implementation not yet started**  
-**Date:** 2026-08-10  
+**Date:** 2026-08-10 · **Amended 2026-08-10 (operator, same day)**
+
+> **Amendment summary.** Three changes to this document, recorded the same day it
+> was written. See `docs/review-2026-08-10-detailed-and-scholarly.md` for the
+> reasoning.
+>
+> 1. **Lesson memory is deferred** (§Lesson memory below). It was not the
+>    capability being asked for, and it cannot be evaluated until transcripts are
+>    readable. Moved to **DQ-015**. This document retains the design so it does
+>    not have to be rewritten if it is later adopted.
+> 2. **Transcript productization is widened and promoted to ADR-034.** It is the
+>    capability that *was* wanted, and it now covers every prose layer — the
+>    debated `text`, `detailed_text`, and scholarly — not just the debate. Note
+>    that `detailed_text` currently captures **nothing**, so this is a capture
+>    problem before it is a surfacing problem.
+> 3. **Active-document threading is step 0**, ahead of everything in the build
+>    order below. The "same source document" rule cannot currently be enforced —
+>    see §Prerequisite.
+>
+> Related new decisions from the same discussion: **ADR-035** (no backfill for
+> new definitions), **ADR-036** (related-document term traceability),
+> **ADR-037** (operator review gated on confidence after recursion).
+
 **Related:** ADR-015 (source preserved), ADR-019 (MPL is identity), ADR-022
 (all frames), ADR-023 (reference closure), ADR-024–026 (intent ≠ semantics),
 1.4.0 `detailed_text` (pedagogical exposition)
@@ -95,6 +117,15 @@ should match debate over time.
 ---
 
 ## Lesson memory (same document only)
+
+> **DEFERRED — DQ-015 (2026-08-10).** Everything in this section is design that
+> is *not* being built now. It was not the capability requested, and its quality
+> cannot be judged until the transcripts it distils are readable (ADR-034).
+> Retained verbatim so it does not need rewriting if adopted later. The open
+> sub-question if it is: a lesson card would be the only model output in Mahalath
+> that does not pass an operator gate, and its failure mode is silent — a wrong
+> `do_not_repeat` steers every later debate on that document with nothing to
+> catch it.
 
 Audit answers “what was said?”. Lessons answer “what should the next pass on
 *this document* do differently?”
@@ -235,13 +266,44 @@ heavier model for scholarly than for detailed.
 
 ---
 
+## Prerequisite — the active document is not currently derivable
+
+**This blocks the hard scope constraint and must be done first.**
+
+The rule above is that lesson and prior-thinking retrieval never crosses
+`source_document_id`, with an acceptance test of *zero* cross-document hits. The
+code cannot express that today: both audit paths take the **first** document in
+the entry's list rather than the one that triggered the write.
+
+```
+staleness.py:1003   entry.source_document_ids[0] if entry.source_document_ids else ""
+ontology.py:387     … or (entry.source_document_ids[0] if entry.source_document_ids else "")
+```
+
+**33 of 119 live entries already carry more than one source document.** A
+redefine triggered by document B on an entry first evidenced by document A
+records A. Any scoping built on that will filter correctly and still retrieve the
+wrong material — the tests would pass and the data would be wrong.
+
+Thread the triggering `source_document_id` through the debate and redefine
+context before building anything below. ADR-036 (related-document linking) also
+depends on a defensible answer here, since two related documents may share a
+passage.
+
 ## Implementation order
 
-1. **Transcript productization** — full linkage + operator “show debate”  
-2. **Same-document lesson distillation + injection** into debate/redefine  
-3. **`scholarly_text` (+ structure)** generator  
-4. **Retrieval / glossary depth** (`short | detailed | scholarly`)  
-5. **Backfill** over live corpus  
+0. **Active-document threading** — prerequisite above (ADR-033 amendment)
+1. **Transcript capture + productization** — for **every** prose layer, not just
+   the debate: `detailed_text` currently writes no record at all, so capture
+   comes before surfacing. Then linkage and an operator "show debate" on the CLI
+   and the entry page. (**ADR-034**)
+2. ~~Same-document lesson distillation + injection~~ — **deferred, DQ-015**
+3. **`scholarly_text` (+ structure)** generator — writes its own conversation
+   record from the start (ADR-034), and completes at write time (ADR-035)
+4. **Retrieval / glossary depth** (`short | detailed | scholarly`)
+5. ~~Backfill over live corpus~~ — **not required.** Per ADR-035 the corpus is a
+   development corpus that is rebuilt; backfill is a convenience, not a
+   deliverable. What matters is that new definitions never need one.
 
 `detailed_text` (1.4.0) stays as-is; scholarly does not subsume it.
 
@@ -260,8 +322,20 @@ heavier model for scholarly than for detailed.
 
 ## Acceptance criteria (when built)
 
-- [ ] Scholarly never written without an accepted `text` for that definition version  
-- [ ] Lesson retrieval unit tests prove **zero** cross-`source_document_id` hits  
-- [ ] Debate prompt fixtures include same-doc lessons and exclude other-doc lessons  
-- [ ] Bundle budget still never drops a frame or codified sense  
-- [ ] Glossary/export can omit raw transcripts while keeping scholarly prose  
+- [ ] Scholarly never written without an accepted `text` for that definition version
+- [ ] **Every prose layer writes a conversation record with its own model and
+      timestamp, linked from the definition, openable from CLI and web** (ADR-034)
+- [ ] **No prose layer leaves a field for a later sweep to fill** (ADR-035)
+- [ ] **A redefine-generated exposition receives a source snippet** — the current
+      gap at `staleness.py:1362` (ADR-035)
+- [ ] Active-document threading: a write records the **triggering**
+      `source_document_id`, not `source_document_ids[0]`
+- [ ] Bundle budget still never drops a frame or codified sense — and
+      `detailed_text` / `scholarly_text` are both droppable **before** any frame
+- [ ] `epistemic_status` is validated against its vocabulary on write
+- [ ] Glossary/export can omit raw transcripts while keeping scholarly prose
+
+Deferred with DQ-015 (re-add if lesson memory is adopted):
+
+- [ ] ~~Lesson retrieval unit tests prove **zero** cross-`source_document_id` hits~~
+- [ ] ~~Debate prompt fixtures include same-doc lessons and exclude other-doc lessons~~

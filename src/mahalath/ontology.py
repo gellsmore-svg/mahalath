@@ -20,6 +20,7 @@ exercises only the accepted/undecided base case.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -43,6 +44,8 @@ from mahalath.db.repositories import (
     UndecidedQueueRepository,
 )
 from mahalath.debate import DebateResult
+
+log = logging.getLogger("mahalath.ontology")
 
 ACCEPTED = "accepted"
 UNDECIDED = "undecided"
@@ -232,9 +235,11 @@ def _maybe_enrich_detailed(
             definition_index=definition_index,
             style_overlay=style,
             source_snippet=result.context or None,
+            # The document being debated IS the triggering document here.
+            source_document_id=result.source_document_id or None,
         )
-    except Exception:  # noqa: BLE001 — never break accept
-        pass
+    except Exception as exc:  # noqa: BLE001 — never break accept
+        log.info("detailed: expansion skipped for %s — %s", mpl_label, exc)
 
 
 def _assign_label(
@@ -348,8 +353,15 @@ def redebate_entry(
     *,
     style_overlay: str | None = None,
     apply: bool = False,
+    triggering_document_id: str | None = None,
 ) -> RedebateResult:
     """Re-run the debate loop on an existing entry to refresh its definition.
+
+    ``triggering_document_id`` names the document whose processing prompted
+    this re-debate. Pass it whenever it is known: an entry can be evidenced by
+    several documents, and recording the first one instead of the one actually
+    being worked makes any same-document scoping filter correctly over the
+    wrong material (ADR-033 prerequisite).
 
     Unlike `persist_debate_result` (which mints a NEW label), this
     refreshes an entry already in the ontology: it runs the standard
@@ -378,14 +390,26 @@ def redebate_entry(
         raise ValueError(f"redebate_entry: {mpl_label!r} has no definition")
 
     current = entry.definitions[-1]
-    src_doc = db.documents.find_one(
-        {"document_id": {"$in": entry.source_document_ids}},
-        {"document_id": 1},
-    )
-    source_document_id = (
-        (src_doc or {}).get("document_id")
-        or (entry.source_document_ids[0] if entry.source_document_ids else "")
-    )
+    # The triggering document wins when the caller knows it; otherwise fall
+    # back to whichever of the entry's sources still exists. The fallback is a
+    # guess and is only correct for single-source entries.
+    if triggering_document_id:
+        source_document_id = triggering_document_id
+    else:
+        src_doc = db.documents.find_one(
+            {"document_id": {"$in": entry.source_document_ids}},
+            {"document_id": 1},
+        )
+        source_document_id = (
+            (src_doc or {}).get("document_id")
+            or (entry.source_document_ids[0] if entry.source_document_ids else "")
+        )
+        if len(entry.source_document_ids) > 1:
+            log.info(
+                "redebate %s: no triggering document supplied; recording %s "
+                "of %d sources (ADR-033 prerequisite)",
+                mpl_label, source_document_id, len(entry.source_document_ids),
+            )
 
     available_contexts = [
         {"name": c.name, "description": c.description}

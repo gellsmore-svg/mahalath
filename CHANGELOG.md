@@ -7,12 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-11
+
 ### Added
+- **Conversation history for every prose layer (ADR-034).** Every model call
+  that contributes prose to a term now writes a `decision_log` row plus its
+  `agent_exchanges`, linked from the definition and readable. `detailed_text`
+  previously recorded *nothing* — the prompt and response were lost the moment
+  the call returned — and now carries `detailed_model_used`,
+  `detailed_created_at` and `detailed_decision_log_id` distinct from the
+  debate's. New `mahalath show-decision <id|MPL-label>` (with `--verbose`,
+  `--layer`, `--json`), a "How this term was arrived at" table on the entry
+  page, and a `/decisions/{id}` view with collapsible prompts. Prose is not
+  stored if its audit write fails: better no exposition than one with no record
+  of where it came from. Expansions use the non-debate outcome `elaborated` and
+  are excluded from debate statistics so acceptance rates stay about debates.
+- **Operator review gated on confidence after recursion (ADR-037).**
+  `/undecided` is now a review queue rather than a list of everything pending:
+  terms surface once attempted `REVIEW_ESCALATION_THRESHOLD` (2) times and
+  still below `runtime.confidence_threshold`, or immediately for `conflict` and
+  `moderator_block`, which re-debate does not resolve. Undebated `proposed_term`
+  entries never surface. The page reports how many items are still being
+  retried, so an empty queue reads as "nothing needs you" rather than "nothing
+  is happening". Accept/reject actions on the page and via
+  `mahalath needs-review` / `accept-undecided` / `reject-undecided`, writing to
+  a new `operator_decisions` audit collection. An operator accept mints its own
+  `decision_log_id` and names the debate it overrode.
+- **Related-document linking and term correspondence (ADR-036).** New
+  `mahalath link-documents` asks the model whether an incoming document is
+  related to one already processed (revision, translation, excerpt, shared
+  material) and records the link; `--correspond` matches terms across the pair.
+  `mahalath compare-documents <link-id>` reports shared terms, terms unique to
+  each side, and definitions that differ — the first way to answer "did that
+  model or process change improve the output?". **Not deduplication:** the
+  incoming document is processed in full and the original's terms are never
+  modified. Opt-in at ingest via `runtime.link_related_documents`.
 - **Design (ADR-033):** scholarly layer + same-document lesson memory —
   [`docs/scholarly-layer.md`](docs/scholarly-layer.md). Three prose layers per
-  sense; debate transcripts remain ground truth; distilled lessons may only be
-  retrieved for the **same `source_document_id`** (not other documents/corpora).
-  Implementation not started.
+  sense; debate transcripts remain ground truth. The lesson-memory half is
+  **deferred to DQ-015**; the transcript half shipped as ADR-034.
+
+### Fixed
+- **Redefine-generated expositions had no corpus text (ADR-035).** The accept
+  path passed a source snippet; the redefine path did not, so a definition
+  rewritten overnight was asked to describe corpus usage with none in front of
+  it and the model invented an example. New `source_snippet_for_entry` supplies
+  a passage, preferring the triggering document.
+- **The triggering document is recorded, not `source_document_ids[0]`.** 33 of
+  119 live entries carry several sources, so the first one is a guess;
+  `redefine_stale_entry` and `redebate_entry` now accept
+  `triggering_document_id`, and the multi-source fallback is logged. This is
+  the ADR-033 prerequisite: without it, same-document scoping would filter
+  correctly over the wrong material.
+- **`backfill-detailed --max-items` bounds attempts, not successes.** With a
+  failing model it previously walked the entire collection regardless of the
+  limit (3 requested → 20 attempted in a 20-entry probe). Now matches the
+  `backfill-intents` / `backfill-contexts` pattern. Failures also report the
+  adapter's own message instead of a fixed `"generation failed"`.
 
 ## [1.4.0] — 2026-08-10
 

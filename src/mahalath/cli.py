@@ -277,6 +277,95 @@ def main(argv: list[str] | None = None) -> int:
     )
     show_proposal_parser.add_argument("proposal_id")
 
+    link_docs_parser = subcommands.add_parser(
+        "link-documents",
+        help=(
+            "Judge which already-processed documents an incoming one is "
+            "related to, and record the link (ADR-036). Never skips work."
+        ),
+    )
+    link_docs_parser.add_argument("document_id")
+    link_docs_parser.add_argument(
+        "--adapter", help="Adapter (default: runtime.model_adapter)."
+    )
+    link_docs_parser.add_argument("--model", help="Override adapter default model.")
+    link_docs_parser.add_argument(
+        "--min-confidence", type=float, default=6.0,
+        help="Minimum judge confidence to record a link (default 6.0).",
+    )
+    link_docs_parser.add_argument(
+        "--correspond", action="store_true",
+        help="Also match terms across each newly linked pair.",
+    )
+
+    compare_docs_parser = subcommands.add_parser(
+        "compare-documents",
+        help=(
+            "What differs between two linked documents' term sets — the "
+            "answer to 'did that model/process change improve the output?'"
+        ),
+    )
+    compare_docs_parser.add_argument("link_id")
+    compare_docs_parser.add_argument(
+        "--json", action="store_true", help="Emit the comparison as JSON."
+    )
+
+    needs_review_parser = subcommands.add_parser(
+        "needs-review",
+        help=(
+            "Terms the system has finished trying on and still cannot settle "
+            "— the only ones worth your attention (ADR-037)."
+        ),
+    )
+    needs_review_parser.add_argument(
+        "--json", action="store_true", help="Emit the queue as JSON."
+    )
+    needs_review_parser.add_argument(
+        "--all", action="store_true",
+        help="Include items still being re-debated (normally hidden).",
+    )
+
+    for cmd, help_text in [
+        ("accept-undecided", "Accept a stuck term into the ontology (ADR-037)."),
+        ("reject-undecided", "Drop a stuck term from the queue (ADR-037)."),
+    ]:
+        parser_ = subcommands.add_parser(cmd, help=help_text)
+        parser_.add_argument("decision_log_id")
+        parser_.add_argument("--note", default="", help="Reason, kept in the audit trail.")
+        if cmd == "accept-undecided":
+            parser_.add_argument(
+                "--definition",
+                help="Override the definition the debate ended on.",
+            )
+            parser_.add_argument(
+                "--parent", dest="parent_label",
+                help="Attach the new entry under this MPL label.",
+            )
+
+    show_decision_parser = subcommands.add_parser(
+        "show-decision",
+        help=(
+            "Read the conversation(s) that produced a term's prose — the "
+            "debate behind the short definition and the expansion behind "
+            "detailed_text (ADR-034)."
+        ),
+    )
+    show_decision_parser.add_argument(
+        "identifier",
+        help="A decision_log_id, or an MPL label (e.g. MPL-001) for all of its conversations.",
+    )
+    show_decision_parser.add_argument(
+        "--verbose", action="store_true",
+        help="Include the full prompt sent to the model, not just the response.",
+    )
+    show_decision_parser.add_argument(
+        "--layer", choices=["debate", "exposition", "scholarly"],
+        help="Show only conversations that produced this prose layer.",
+    )
+    show_decision_parser.add_argument(
+        "--json", action="store_true", help="Emit the records as JSON."
+    )
+
     for cmd, help_text in [
         ("accept-proposal", "Accept a pending_review proposal (applies it)."),
         ("reject-proposal", "Reject a pending_review proposal."),
@@ -776,6 +865,38 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "show-proposal":
         return _show_proposal(config, args.proposal_id)
+
+    if args.command == "link-documents":
+        return _link_documents(
+            config, args.document_id, adapter_name=args.adapter,
+            model=args.model, min_confidence=args.min_confidence,
+            correspond=args.correspond,
+        )
+
+    if args.command == "compare-documents":
+        return _compare_documents(config, args.link_id, as_json=args.json)
+
+    if args.command == "needs-review":
+        return _needs_review(config, as_json=args.json, show_all=args.all)
+
+    if args.command in ("accept-undecided", "reject-undecided"):
+        return _decide_undecided(
+            config,
+            args.decision_log_id,
+            accept=args.command == "accept-undecided",
+            note=args.note,
+            definition=getattr(args, "definition", None),
+            parent_label=getattr(args, "parent_label", None),
+        )
+
+    if args.command == "show-decision":
+        return _show_decision(
+            config,
+            args.identifier,
+            verbose=args.verbose,
+            layer=args.layer,
+            as_json=args.json,
+        )
 
     if args.command == "accept-proposal":
         return _operator_decision(
@@ -1632,6 +1753,260 @@ def _list_proposals(config: AppConfig, *, status: str | None) -> int:
         return 0
     finally:
         close_all()
+
+
+def _link_documents(
+    config: AppConfig,
+    document_id: str,
+    *,
+    adapter_name: str | None = None,
+    model: str | None = None,
+    min_confidence: float = 6.0,
+    correspond: bool = False,
+) -> int:
+    """Record which processed documents this one is related to (ADR-036)."""
+    import json as _json
+
+    from mahalath.adapters import make_adapter
+    from mahalath.db import get_database
+    from mahalath.relatedness import (
+        RelatednessError,
+        correspond_terms,
+        find_related_documents,
+    )
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    adapter = make_adapter(adapter_name or config.runtime.model_adapter, config)
+    try:
+        links = find_related_documents(
+            db, document_id, adapter, min_confidence=min_confidence, model=model,
+        )
+    except RelatednessError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 9
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "document_id": document_id,
+        "links": [link.to_dict() for link in links],
+    }
+    if correspond:
+        matched = []
+        for link in links:
+            matched.extend(
+                c.to_dict() for c in correspond_terms(db, link.link_id)
+            )
+        payload["correspondences"] = matched
+    print(_json.dumps(payload, indent=2, default=str))
+    return 0
+
+
+def _compare_documents(
+    config: AppConfig, link_id: str, *, as_json: bool = False
+) -> int:
+    """Show what differs between two linked documents' term sets (ADR-036)."""
+    import json as _json
+
+    from mahalath.db import get_database
+    from mahalath.relatedness import RelatednessError, compare_linked_documents
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        report = compare_linked_documents(db, link_id)
+    except RelatednessError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 9
+
+    if as_json:
+        print(_json.dumps(report, indent=2, default=str))
+        return 0
+
+    print(
+        f"{report['document_title']} ({report['document_id'][:8]})  ↔  "
+        f"{report['related_document_title']} ({report['related_document_id'][:8]})  "
+        f"({report['relation']})"
+    )
+    print(f"  shared terms      : {report['shared_terms']}")
+    print(f"  only in first     : {len(report['only_in_document'])}")
+    print(f"  only in related   : {len(report['only_in_related'])}")
+    print(f"  differing meanings: {len(report['differing_definitions'])}")
+    for row in report["differing_definitions"][:20]:
+        print(f"\n  {row['term']!r}")
+        print(f"    {row['mpl_label']}: {row['definition'][:160]}")
+        print(f"    {row['related_mpl_label']}: {row['related_definition'][:160]}")
+    return 0
+
+
+def _needs_review(
+    config: AppConfig, *, as_json: bool = False, show_all: bool = False
+) -> int:
+    """Print only the terms that actually need a person (ADR-037)."""
+    import json as _json
+
+    from mahalath.db import get_database
+    from mahalath.review_gate import load_review_queue
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    queue = load_review_queue(
+        db, confidence_threshold=config.runtime.confidence_threshold
+    )
+    if as_json:
+        print(_json.dumps(queue.to_dict(), indent=2, default=str))
+        return 0
+
+    if not queue.awaiting:
+        print("Nothing needs you.")
+    else:
+        print(
+            f"{len(queue.awaiting)} term(s) need review "
+            f"(attempted {queue.escalation_threshold}+ times, still below "
+            f"{queue.confidence_threshold:g}):"
+        )
+        for item in queue.awaiting:
+            score = (
+                f"{item.last_confidence:.1f}"
+                if item.last_confidence is not None else "no score"
+            )
+            print(
+                f"  {item.decision_log_id}  {item.term!r}  "
+                f"[{item.reason}]  conf {score}  attempts {item.escalation_level}"
+            )
+        print("\n  read the debate:  mahalath show-decision <decision_log_id>")
+        print("  decide:           mahalath accept-undecided|reject-undecided <id>")
+    if queue.still_retrying:
+        print(
+            f"\n{queue.still_retrying} further item(s) are still being "
+            "re-debated and are not shown."
+        )
+    if show_all and queue.still_retrying:
+        from mahalath.db.repositories import UndecidedQueueRepository
+
+        print("\nStill retrying:")
+        for item in UndecidedQueueRepository(db).list_pending(limit=200):
+            if any(a.decision_log_id == item.decision_log_id for a in queue.awaiting):
+                continue
+            print(
+                f"  {item.decision_log_id}  {item.term!r}  "
+                f"[{item.reason}]  attempts {item.escalation_level}"
+            )
+    return 0
+
+
+def _decide_undecided(
+    config: AppConfig,
+    decision_log_id: str,
+    *,
+    accept: bool,
+    note: str = "",
+    definition: str | None = None,
+    parent_label: str | None = None,
+) -> int:
+    """Operator accept/reject on a stuck term (ADR-037)."""
+    from mahalath.db import get_database
+    from mahalath.review_gate import ReviewError, accept_undecided, reject_undecided
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        if accept:
+            label = accept_undecided(
+                db, decision_log_id, config.runtime,
+                definition=definition, parent_label=parent_label, note=note,
+            )
+            print(f"accepted → {label}")
+        else:
+            reject_undecided(db, decision_log_id, note=note)
+            print(f"rejected {decision_log_id}")
+    except ReviewError as exc:
+        print(f"mahalath: {exc}", file=sys.stderr)
+        return 9
+    return 0
+
+
+def _show_decision(
+    config: AppConfig,
+    identifier: str,
+    *,
+    verbose: bool = False,
+    layer: str | None = None,
+    as_json: bool = False,
+) -> int:
+    """Print the conversation(s) behind a term's prose (ADR-034).
+
+    Accepts either a `decision_log_id` or an MPL label; the label form is the
+    useful one day to day, because you start from a term you are reading, not
+    from an id you would have to go and find.
+    """
+    import json as _json
+
+    from mahalath.db import get_database
+    from mahalath.transcripts import (
+        conversations_for_entry,
+        load_conversation,
+        render_conversation,
+    )
+
+    try:
+        db = get_database(config)
+    except Exception as exc:  # pragma: no cover
+        print(f"mahalath: MongoDB unreachable: {exc}", file=sys.stderr)
+        return 4
+
+    identifier = identifier.strip()
+    if identifier.upper().startswith("MPL-"):
+        conversations = conversations_for_entry(db, identifier.upper())
+        if not conversations:
+            print(
+                f"mahalath: no entry {identifier!r}, or it has no recorded "
+                "conversations.",
+                file=sys.stderr,
+            )
+            return 9
+    else:
+        one = load_conversation(db, identifier)
+        if one is None:
+            print(
+                f"mahalath: no decision log {identifier!r}.", file=sys.stderr
+            )
+            return 9
+        conversations = [one]
+
+    if layer:
+        conversations = [c for c in conversations if c.layer == layer]
+        if not conversations:
+            print(f"mahalath: no {layer} conversation found.", file=sys.stderr)
+            return 9
+
+    if as_json:
+        print(_json.dumps([c.to_dict() for c in conversations], indent=2, default=str))
+        return 0
+
+    for index, conversation in enumerate(conversations):
+        if index:
+            print()
+            print("─" * 72)
+            print()
+        print(render_conversation(conversation, verbose=verbose))
+    return 0
 
 
 def _show_proposal(config: AppConfig, proposal_id: str) -> int:

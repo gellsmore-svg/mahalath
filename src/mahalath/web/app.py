@@ -30,7 +30,6 @@ from mahalath.db.repositories import (
     DefinitionContextRepository,
     OntologyEntryRepository,
     OntologyTreeRepository,
-    UndecidedQueueRepository,
 )
 from mahalath.proposals import (
     ProposalError,
@@ -420,6 +419,43 @@ def _register_routes(app: FastAPI) -> None:
             if entry.parent_label else '<span class="muted">top-level</span>'
         )
 
+        # ADR-034: the conversation behind every prose layer must be readable,
+        # not just identified by an opaque id.
+        from mahalath.transcripts import conversations_for_entry
+
+        conversations = conversations_for_entry(db, entry.mpl_label)
+        decision_log_html = (
+            f'<a href="/decisions/{escape(entry.decision_log_id)}">'
+            f'<code>{escape(entry.decision_log_id)}</code></a>'
+            if entry.decision_log_id else '<span class="muted">—</span>'
+        )
+        if conversations:
+            rows = "".join(
+                f"""
+<tr>
+  <td><span class="badge">{escape(c.layer)}</span></td>
+  <td>{'<span class="muted">—</span>' if c.definition_index is None
+       else f"#{c.definition_index}"}</td>
+  <td>{escape(c.outcome)}</td>
+  <td>{_iso(c.created_at) if c.created_at else '<span class="muted">—</span>'}</td>
+  <td>{'<span class="muted">no record (predates capture)</span>'
+       if c.missing else
+       f'<a href="/decisions/{escape(c.decision_log_id)}">show conversation</a>'}</td>
+</tr>""" for c in conversations
+            )
+            conversations_html = f"""
+<h2>How this term was arrived at</h2>
+<table>
+<tr><th>Layer</th><th>Definition</th><th>Outcome</th><th>When</th><th></th></tr>
+{rows}
+</table>"""
+        else:
+            conversations_html = (
+                "<h2>How this term was arrived at</h2>"
+                '<p class="muted">No conversation records — this entry predates '
+                "conversation capture (ADR-034).</p>"
+            )
+
         body = f"""
 <h1>{escape(entry.mpl_label)} — {escape(entry.canonical_term)}</h1>
 <table class="kvbox">
@@ -428,15 +464,56 @@ def _register_routes(app: FastAPI) -> None:
 <tr><th>Parent</th><td>{parent_html}</td></tr>
 <tr><th>Children</th><td>{children_html}</td></tr>
 <tr><th>Aliases</th><td>{aliases}</td></tr>
-<tr><th>Decision log</th><td><code>{escape(entry.decision_log_id or "")}</code></td></tr>
+<tr><th>Decision log</th><td>{decision_log_html}</td></tr>
 <tr><th>Source documents</th><td>{', '.join(f'<code>{escape(s)}</code>' for s in entry.source_document_ids) or '<span class="muted">—</span>'}</td></tr>
 <tr><th>Updated</th><td>{_iso(entry.updated_at)}</td></tr>
 </table>
 <h2>Definitions</h2>
 {polysemy_html}
 {defs_html}
+{conversations_html}
 """
         return _base(f"{entry.mpl_label}", body, config.mongo.database, active="/ontology")
+
+    @app.get("/decisions/{decision_log_id}", response_class=HTMLResponse)
+    def decision_detail(request: Request, decision_log_id: str) -> str:
+        """The full conversation behind one piece of prose (ADR-034)."""
+        from mahalath.transcripts import load_conversation
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        conversation = load_conversation(db, decision_log_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="decision log not found")
+
+        turns = "".join(
+            f"""
+<h3>iteration {t.iteration} · {escape(t.role)} · <code>{escape(t.model)}</code>
+{f'· confidence {t.confidence}' if t.confidence is not None else ''}</h3>
+<details><summary>prompt sent to the model</summary><pre>{escape(t.prompt)}</pre></details>
+<pre>{escape(t.response)}</pre>""" for t in conversation.exchanges
+        ) or "".join(
+            f"<h3>{escape(str(m.get('role')))}</h3><pre>{escape(str(m.get('content') or ''))}</pre>"
+            for m in conversation.messages
+        ) or '<p class="muted">(record exists but carries no messages)</p>'
+
+        body = f"""
+<h1>Conversation <code>{escape(conversation.decision_log_id)}</code></h1>
+<table class="kvbox">
+<tr><th>Produced</th><td><span class="badge">{escape(conversation.layer)}</span></td></tr>
+<tr><th>Term</th><td>{escape(conversation.term)}</td></tr>
+<tr><th>Outcome</th><td>{escape(conversation.outcome)}</td></tr>
+<tr><th>Confidence</th><td>{conversation.final_confidence
+    if conversation.final_confidence is not None else '—'}</td></tr>
+<tr><th>Source document</th><td><code>{escape(conversation.source_document_id or '—')}</code></td></tr>
+<tr><th>Recorded</th><td>{_iso(conversation.created_at) if conversation.created_at else '—'}</td></tr>
+</table>
+{turns}
+"""
+        return _base(
+            f"Conversation {conversation.decision_log_id[:8]}",
+            body, config.mongo.database, active="/ontology",
+        )
 
     @app.get("/proposals", response_class=HTMLResponse)
     def proposals_list(request: Request, status: str | None = None) -> str:
@@ -595,26 +672,89 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/undecided", response_class=HTMLResponse)
     def undecided_list(request: Request) -> str:
+        """Only terms the system has finished trying on (ADR-037)."""
+        from mahalath.review_gate import load_review_queue
+
         config: AppConfig = request.app.state.config
         db = get_database(config)
-        items = UndecidedQueueRepository(db).list_pending(limit=200)
+        queue = load_review_queue(
+            db, confidence_threshold=config.runtime.confidence_threshold
+        )
         rows = [f"""
 <tr>
-  <td>{escape(item.term)}</td>
+  <td><a href="/decisions/{escape(item.decision_log_id)}">{escape(item.term)}</a></td>
   <td><code>{escape(item.reason)}</code></td>
   <td>{f"{item.last_confidence:.1f}" if item.last_confidence is not None else '<span class="muted">—</span>'}</td>
   <td>{item.escalation_level}</td>
-  <td><code>{escape(item.decision_log_id[:8])}…</code></td>
   <td>{_iso(item.created_at)}</td>
-</tr>""" for item in items]
+  <td>
+    <form method="post" action="/undecided/{escape(item.decision_log_id)}/accept" class="inline">
+      <input type="text" name="definition" placeholder="override definition (optional)" size="30">
+      <button type="submit">Accept</button>
+    </form>
+    <form method="post" action="/undecided/{escape(item.decision_log_id)}/reject" class="inline">
+      <button type="submit">Reject</button>
+    </form>
+  </td>
+</tr>""" for item in queue.awaiting]
+        still = (
+            f'<p class="muted">{queue.still_retrying} further item(s) are still '
+            f'being re-debated overnight and are not shown: the system has not '
+            f'finished with them yet. Terms surface here once they have been '
+            f'attempted {queue.escalation_threshold}+ times and are still below '
+            f'{queue.confidence_threshold:g}, or immediately when agents disagree '
+            f'on whether a term holds one meaning or two.</p>'
+            if queue.still_retrying else ""
+        )
         body = f"""
-<h1>Undecided queue <span class="muted">({len(rows)})</span></h1>
+<h1>Needs your review <span class="muted">({len(rows)} of {queue.total_pending} queued)</span></h1>
+{still}
 <table>
-<tr><th>Term</th><th>Reason</th><th>Last conf</th><th>Escalation</th><th>Decision log</th><th>Created</th></tr>
-{''.join(rows) or '<tr><td colspan="6" class="muted">(queue is empty)</td></tr>'}
+<tr><th>Term</th><th>Reason</th><th>Last conf</th><th>Attempts</th><th>Created</th><th>Decision</th></tr>
+{''.join(rows) or '<tr><td colspan="6" class="muted">(nothing needs you right now)</td></tr>'}
 </table>
 """
         return _base("Undecided", body, config.mongo.database, active="/undecided")
+
+    @app.post("/undecided/{decision_log_id}/accept")
+    def undecided_accept(
+        request: Request, decision_log_id: str,
+        definition: str = Form(""), note: str = Form(""),
+    ) -> RedirectResponse:
+        """Accept a stuck term on the operator's authority (ADR-037)."""
+        from mahalath.review_gate import ReviewError, accept_undecided
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        try:
+            accept_undecided(
+                db, decision_log_id, config.runtime,
+                definition=definition.strip() or None,
+                note=note,
+                decided_by="operator (web)",
+            )
+        except ReviewError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        from mahalath.glossary import refresh_glossary
+        refresh_glossary(config, db)
+        return RedirectResponse("/undecided", status_code=303)
+
+    @app.post("/undecided/{decision_log_id}/reject")
+    def undecided_reject(
+        request: Request, decision_log_id: str, note: str = Form("")
+    ) -> RedirectResponse:
+        """Drop a stuck term; the audit trail keeps the decision (ADR-037)."""
+        from mahalath.review_gate import ReviewError, reject_undecided
+
+        config: AppConfig = request.app.state.config
+        db = get_database(config)
+        try:
+            reject_undecided(
+                db, decision_log_id, note=note, decided_by="operator (web)"
+            )
+        except ReviewError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return RedirectResponse("/undecided", status_code=303)
 
     @app.get("/effectiveness", response_class=HTMLResponse)
     def effectiveness_page(request: Request) -> str:
