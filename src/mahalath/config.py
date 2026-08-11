@@ -92,6 +92,16 @@ class RuntimeConfig(BaseModel):
     # the related document's terms are never touched. Costs one model call per
     # candidate document, so it is opt-in.
     link_related_documents: bool = False
+    # Model that JUDGES document relatedness. None -> runtime.model.
+    # Worth pinning to a larger family than the debate default: judging
+    # "same work vs merely same topic" needs the model to read both documents
+    # rather than reason from their titles, and a small model does not. On the
+    # live corpus gemma2:2b called an English ontology and a German pilot on a
+    # different subject a `translation` at confidence 8.0, inferring it from the
+    # word "Edition"; mistral-small correctly returned not-related at 9.5 on the
+    # identical prompt. Both were confident, so a confidence floor does not
+    # substitute for a capable judge.
+    relatedness_model: str | None = None
     # Adapter used by the /api/chat endpoint. Defaults to ollama_http
     # so a fresh install works end-to-end without an `ollama` binary on
     # PATH (only the HTTP API needs to be reachable). Override to

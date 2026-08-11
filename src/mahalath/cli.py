@@ -288,7 +288,10 @@ def main(argv: list[str] | None = None) -> int:
     link_docs_parser.add_argument(
         "--adapter", help="Adapter (default: runtime.model_adapter)."
     )
-    link_docs_parser.add_argument("--model", help="Override adapter default model.")
+    link_docs_parser.add_argument(
+        "--model",
+        help="Judge model. Defaults to runtime.relatedness_model, then runtime.model.",
+    )
     link_docs_parser.add_argument(
         "--min-confidence", type=float, default=6.0,
         help="Minimum judge confidence to record a link (default 6.0).",
@@ -1782,9 +1785,14 @@ def _link_documents(
         return 4
 
     adapter = make_adapter(adapter_name or config.runtime.model_adapter, config)
+    # Explicit --model wins; otherwise the configured judge; otherwise the
+    # adapter default. Relatedness is judged, not generated, and the judge is
+    # worth pinning separately from the debate model (see config docstring).
+    judge_model = model or getattr(config.runtime, "relatedness_model", None)
     try:
         links = find_related_documents(
-            db, document_id, adapter, min_confidence=min_confidence, model=model,
+            db, document_id, adapter,
+            min_confidence=min_confidence, model=judge_model,
         )
     except RelatednessError as exc:
         print(f"mahalath: {exc}", file=sys.stderr)

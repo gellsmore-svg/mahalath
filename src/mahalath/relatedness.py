@@ -231,15 +231,29 @@ def find_related_documents(
         return []
 
     incoming_sample = _sample(db, document_id)
+    if not incoming_sample[1].strip():
+        # Judging a title against a full document would produce a confident
+        # answer from no evidence. Refuse rather than record a guess.
+        raise RelatednessError(
+            f"no archived text for {document_id!r} "
+            f"(looked for archive_path/source_path); cannot judge relatedness"
+        )
+
     links: list[DocumentLink] = []
     for candidate in candidates:
         other_id = candidate.get("document_id")
         if not other_id or _link_exists(db, document_id, other_id):
             continue
 
-        prompt = build_relatedness_prompt(
-            incoming_sample, _sample(db, other_id)
-        )
+        candidate_sample = _sample(db, other_id)
+        if not candidate_sample[1].strip():
+            log.info(
+                "relatedness: skipped %s — no archived text to compare against",
+                other_id,
+            )
+            continue
+
+        prompt = build_relatedness_prompt(incoming_sample, candidate_sample)
         try:
             response = adapter.generate(prompt, model=model, want_json=True)
             verdict = parse_relatedness_verdict(response.text)

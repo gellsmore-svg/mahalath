@@ -162,7 +162,10 @@ def ingest_one(
         try:
             from mahalath.relatedness import find_related_documents
 
-            links = find_related_documents(db, record.document_id, adapter)
+            links = find_related_documents(
+                db, record.document_id, adapter,
+                model=getattr(config.runtime, "relatedness_model", None),
+            )
             if links:
                 log.info(
                     "ingest: %s linked to %d related document(s)",

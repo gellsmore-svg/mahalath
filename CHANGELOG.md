@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-08-11
+
+First operation of ADR-036 against the live corpus, and what it exposed.
+
+### Added
+- **`runtime.relatedness_model`** — the model that judges document relatedness,
+  separate from the debate default (`None` → `runtime.model`), matching the
+  existing per-role override pattern. Threaded through both call sites: the
+  `link-documents` CLI (explicit `--model` still wins) and the ingest hook —
+  without the second, turning the knob would have fixed the manual command and
+  left automatic linking on the fast model.
+
+  Pinning it matters. Judging "same work vs merely the same topic" requires
+  reading both documents rather than reasoning from their titles, and a small
+  model does not. Measured on the live corpus: `gemma2:2b` called an English
+  ontology and an unrelated German pilot a `translation` at confidence 8.0,
+  inferring it from the word "Edition"; `mistral-small` returned not-related at
+  9.5 on the identical prompt. Both were confident, so raising
+  `--min-confidence` is no substitute for a capable judge.
+- `link_related_documents` and `relatedness_model` documented in
+  `config.example.yaml` (neither was discoverable before).
+
+### Fixed
+- **Relatedness refuses to judge a document whose text cannot be read.**
+  `_sample()` returned an empty string when the archived file was missing, and
+  the judge was then handed a *title* to compare against a full document —
+  producing a confident verdict from no evidence and recording it as a link.
+  Found on the live corpus, where one document's archive had been deleted while
+  its database record remained. Now raises for the incoming document and skips
+  unreadable candidates without spending a model call.
+
+### Notes
+- Requires **hoglah >= 0.10.0** on the *worker daemon*, not just the client. A
+  0.9.0 daemon cannot deserialise a request carrying `depends_on`,
+  `idempotency_key`, `retry_policy` or `run_at` and fails every job with
+  Hoglah's generic `"Unexpected worker error"`. Symptom: jobs enqueue, run and
+  fail with no usable reason. Fix: upgrade and restart the daemon.
+
 ## [1.5.0] — 2026-08-11
 
 ### Added

@@ -22,6 +22,25 @@ runtime:
   # After each accepted definition (debate / redefine), generate a longer
   # detailed_text exposition of the same sense (best-effort extra model call).
   # generate_detailed_definitions: true
+
+  # ADR-036: on ingest, ask a model whether the incoming document is related to
+  # one already processed (revision, translation, excerpt, shared material) and
+  # record the link. NOT deduplication — the document is still processed in
+  # full and the related document's terms are never touched; the link exists so
+  # two runs over related material can be compared (`mahalath
+  # compare-documents`). Costs one model call per already-processed document at
+  # every ingest, so it is off by default and gets slower as the corpus grows.
+  # link_related_documents: false
+  #
+  # The model that JUDGES relatedness. None -> `model` below. Worth pinning to
+  # a larger family than the debate default: deciding "same work vs merely same
+  # topic" requires reading both documents rather than reasoning from their
+  # titles. Measured on a real corpus — gemma2:2b called an English ontology
+  # and an unrelated German pilot a `translation` at confidence 8.0, inferring
+  # it from the word "Edition"; mistral-small returned not-related at 9.5 on
+  # the identical prompt. Both were confident, so raising --min-confidence is
+  # no substitute for a capable judge.
+  # relatedness_model: mistral-small:latest
   # gemma4:e2b chosen as Stage 1 default after a 2026-06-06 comparison
   # against gemma3:1b: 4.8x faster end-to-end (24s vs 1m58s on the
   # agonist-intro smoke), 1 iteration to acceptance vs 22-23, and

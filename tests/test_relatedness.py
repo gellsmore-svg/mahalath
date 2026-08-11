@@ -215,3 +215,49 @@ def test_redebate_records_the_triggering_document_not_the_first(mongo_db) -> Non
         "the audit must name the document that triggered the write, "
         "not source_document_ids[0]"
     )
+
+
+def test_refuses_to_judge_a_document_with_no_archived_text(mongo_db, tmp_path) -> None:
+    """A title against a full document would be a confident answer from nothing."""
+    mongo_db.documents.insert_one({
+        "document_id": "gone", "checksum_sha256": "c9", "title": "Vanished",
+        "archive_path": str(tmp_path / "does-not-exist.md"),
+    })
+    _doc(mongo_db, "d1", checksum="c1", title="Present", text="real text", tmp_path=tmp_path)
+    with pytest.raises(RelatednessError, match="no archived text"):
+        find_related_documents(mongo_db, "gone", Judge("unused"))
+
+
+def test_skips_a_candidate_whose_text_is_missing(mongo_db, tmp_path) -> None:
+    _doc(mongo_db, "d1", checksum="c1", title="Present", text="real text", tmp_path=tmp_path)
+    mongo_db.documents.insert_one({
+        "document_id": "gone", "checksum_sha256": "c9", "title": "Vanished",
+        "archive_path": str(tmp_path / "does-not-exist.md"),
+    })
+    judge = Judge('{"related": true, "relation": "revision", "confidence": 9.0}')
+    assert find_related_documents(mongo_db, "d1", judge) == []
+    assert judge.calls == 0, "must not spend a call on an unreadable candidate"
+
+
+def test_configured_judge_is_used_when_no_model_is_passed(mongo_db, tmp_path) -> None:
+    """relatedness_model must reach the adapter — a small judge gets this wrong."""
+    from mahalath.config import RuntimeConfig
+
+    seen: list[str | None] = []
+
+    class Recording(Adapter):
+        def generate(self, prompt, model=None, want_json=False):
+            seen.append(model)
+
+            class R:
+                text = '{"related": false, "relation": null, "confidence": 9.0}'
+
+            return R()
+
+    _doc(mongo_db, "d1", checksum="c1", title="A", text="a", tmp_path=tmp_path)
+    _doc(mongo_db, "d2", checksum="c2", title="B", text="b", tmp_path=tmp_path)
+    cfg = RuntimeConfig(relatedness_model="mistral-small:latest")
+    find_related_documents(
+        mongo_db, "d2", Recording(), model=cfg.relatedness_model
+    )
+    assert seen == ["mistral-small:latest"]
