@@ -280,6 +280,17 @@ def _render_definition(
     if intent_parts:
         lines.append("")
         lines.append(f"_({'; '.join(intent_parts)})_")
+    from mahalath.grounding import grounding_summary_line
+
+    summary = grounding_summary_line(
+        invoked=bool(getattr(definition, "grounding_invoked", False)),
+        relation=getattr(definition, "grounding_relation", None),
+        corpus_confidence=getattr(definition, "corpus_confidence", None),
+        evidence_count=len(getattr(definition, "external_evidence", None) or []),
+    )
+    if summary:
+        lines.append("")
+        lines.append(f"_({summary})_")
     lines.append("")
     return lines
 
@@ -332,6 +343,13 @@ def _build_json_payload(
                         ],
                         "intentionality": d.intentionality,
                         "intent_confidence": d.intent_confidence,
+                        # Semantic grounding (ADR-038). The passage text
+                        # stays on the audit row, not in the glossary.
+                        "grounding_mode": d.grounding_mode,
+                        "grounding_invoked": d.grounding_invoked,
+                        "corpus_confidence": d.corpus_confidence,
+                        "grounding_relation": d.grounding_relation,
+                        "external_evidence_count": len(d.external_evidence),
                         "created_at": d.created_at,
                     }
                     for d in ec.entry.definitions

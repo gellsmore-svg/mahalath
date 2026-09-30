@@ -619,6 +619,425 @@ def test_redefine_skips_when_below_min_confidence(mongo_db, mongo_config) -> Non
     assert len(stored.definitions) == 1
 
 
+_PASSAGE = (
+    "Elsewhere a vorton is a vortex loop in a cosmological field model "
+    "with no bearing on this author's wording."
+)
+_REVISED = (
+    "Alpha is the foundational sense, bounded by the current upstream."
+)
+
+
+class _BoomRetriever:
+    def retrieve(self, query: str, *, limit: int):
+        raise AssertionError("overnight off must not retrieve")
+
+
+class _HitRetriever:
+    def __init__(self) -> None:
+        from mahalath.grounding import EvidenceHit
+
+        self.calls = 0
+        self.errors: list[str] = []
+        self._hits = [EvidenceHit(
+            provider="static",
+            title="Alpha",
+            snippet=_PASSAGE,
+            url="https://example.invalid/alpha",
+        )]
+
+    def retrieve(self, query: str, *, limit: int):
+        self.calls += 1
+        return list(self._hits)
+
+
+def _redefine_json(text: str, confidence: float) -> str:
+    import json
+    return json.dumps({
+        "new_definition": text,
+        "confidence": confidence,
+        "rationale": "checked against current upstream",
+    })
+
+
+def _grounding_json(*, relation: str, definition: str, confidence: float) -> str:
+    import json
+    return json.dumps({
+        "relation": relation,
+        "source_faithful": True,
+        "definition": definition,
+        "explanation": "checked against the source",
+        "confidence": confidence,
+        "evidence_notes": "the passage is not the definition",
+    })
+
+
+def _flag_audit_inconsistent(mongo_db, label: str) -> None:
+    mongo_db.ontology_entries.update_one(
+        {"_id": label},
+        {
+            "$set": {"is_stale": True},
+            "$push": {"stale_reasons": {
+                "change_type": "audit_inconsistent",
+                "note": "needs redefine",
+            }},
+        },
+    )
+
+
+def test_redefine_overnight_off_does_not_retrieve(mongo_db) -> None:
+    """hybrid/external mode does not retrieve while overnight is off."""
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    adapter = MockAdapter(default_response=_redefine_json("alpha sense v2", 8.5))
+    retriever = _BoomRetriever()
+    verdict = redefine_stale_entry(
+        entry, mongo_db, adapter,
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(
+            mode="external", overnight=False, providers=["wikipedia"],
+        ),
+        retriever=retriever,
+    )
+    assert verdict is not None
+    assert verdict.noop is False
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    written = stored.definitions[-1]
+    assert written.text == "alpha sense v2"
+    assert written.grounding_mode is None
+    assert written.grounding_invoked is False
+    assert written.consensus_score is None
+    assert mongo_db.semantic_grounding.count_documents({}) == 0
+    assert not any(
+        "[Grounding speaker:" in call.get("prompt", "") for call in adapter.calls
+    )
+
+
+def test_redefine_pending_overnight_off_stays_ungrounded(mongo_db, mongo_config) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_pending_stale
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    config = mongo_config.model_copy(update={
+        "semantic_grounding": SemanticGroundingConfig(
+            mode="external", overnight=False, providers=["wikipedia"],
+        ),
+    })
+    result = redefine_pending_stale(
+        config, mongo_db,
+        MockAdapter(default_response=_redefine_json("alpha sense v2", 8.5)),
+        max_items=5,
+        intent_backfill=False,
+        retriever=_BoomRetriever(),
+    )
+    assert result.items_redefined == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.definitions[-1].grounding_mode is None
+    assert mongo_db.semantic_grounding.count_documents({}) == 0
+
+
+def test_redefine_pending_overnight_on_stamps_mode_from_config(
+    mongo_db, mongo_config,
+) -> None:
+    """The sweep reads semantic_grounding.overnight; it is not a direct-call only flag."""
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_pending_stale
+
+    _seed(mongo_db, "MPL-001", "alpha")
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    config = mongo_config.model_copy(update={
+        "semantic_grounding": SemanticGroundingConfig(
+            mode="hybrid",
+            overnight=True,
+            external_lookup_threshold=8.0,
+            providers=["wikipedia"],
+        ),
+    })
+    result = redefine_pending_stale(
+        config, mongo_db,
+        MockAdapter(default_response=_redefine_json("alpha sense v2", 9.0)),
+        max_items=5,
+        intent_backfill=False,
+        retriever=_BoomRetriever(),
+    )
+    assert result.items_redefined == 1
+    written = OntologyEntryRepository(mongo_db).get("MPL-001").definitions[-1]
+    assert written.grounding_mode == "hybrid"
+    assert written.grounding_invoked is False
+    assert written.consensus_score is None
+    assert mongo_db.semantic_grounding.count_documents({}) == 0
+
+
+def test_redefine_overnight_corpus_only_stamps_mode_without_retrieval(mongo_db) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    verdict = redefine_stale_entry(
+        entry, mongo_db,
+        MockAdapter(default_response=_redefine_json("alpha sense v2", 8.5)),
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(
+            mode="corpus_only", overnight=True, providers=["wikipedia"],
+        ),
+        retriever=_BoomRetriever(),
+    )
+    assert verdict is not None
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    written = stored.definitions[-1]
+    assert written.text == "alpha sense v2"
+    assert written.grounding_mode == "corpus_only"
+    assert written.grounding_invoked is False
+    assert written.consensus_score is None
+    assert written.external_evidence == []
+    assert mongo_db.semantic_grounding.count_documents({}) == 0
+
+
+def test_redefine_overnight_hybrid_adopts_below_the_redefine_floor(mongo_db) -> None:
+    """A weak source-first score may still be stored once grounding lifts it."""
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.db.repositories import SemanticGroundingRepository
+    from mahalath.staleness import redefine_stale_entry
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    payload = _grounding_json(
+        relation="enrich", definition=_REVISED, confidence=7.5,
+    )
+    adapter = MockAdapter(
+        default_response=_redefine_json("alpha sense v2 from the corpus", 5.5),
+        responses={
+            "[Grounding speaker: precision_critic]": payload,
+            "[Grounding speaker: synthesis_explorer]": payload,
+        },
+    )
+    retriever = _HitRetriever()
+    verdict = redefine_stale_entry(
+        entry, mongo_db, adapter,
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(
+            mode="hybrid",
+            overnight=True,
+            external_lookup_threshold=8.0,
+        ),
+        retriever=retriever,
+    )
+    assert verdict is not None
+    assert verdict.noop is False
+    assert verdict.new_definition == _REVISED
+    assert verdict.confidence == 7.5
+    assert retriever.calls == 1
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.is_stale is False
+    written = stored.definitions[-1]
+    assert written.text == _REVISED
+    assert _PASSAGE not in written.text
+    assert written.grounding_mode == "hybrid"
+    assert written.grounding_invoked is True
+    assert written.grounding_relation == "enrich"
+    assert written.corpus_confidence == 5.5
+    assert written.consensus_score == 7.5
+    assert written.external_evidence[0]["url"] == "https://example.invalid/alpha"
+    assert written.model_used == "rem_redefine (mock-model)"
+
+    log = mongo_db.decision_log.find_one(
+        {"decision_log_id": verdict.decision_log_id}
+    )
+    roles = [message["role"] for message in log["messages"]]
+    assert roles == [
+        "rem_redefine",
+        "grounding_precision_critic",
+        "grounding_synthesis_explorer",
+    ]
+    assert log["final_confidence"] == 7.5
+    exchange_roles = [
+        row["role"]
+        for row in mongo_db.agent_exchanges.find(
+            {"decision_log_id": verdict.decision_log_id}
+        )
+    ]
+    assert sorted(exchange_roles) == sorted(roles)
+    audit = SemanticGroundingRepository(mongo_db).for_decision(
+        verdict.decision_log_id
+    )
+    assert audit is not None
+    assert audit.adopted is True
+    assert audit.mpl_label == "MPL-001"
+    assert audit.corpus_confidence == 5.5
+
+
+def test_redefine_overnight_challenge_below_floor_does_not_append(mongo_db) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    payload = _grounding_json(
+        relation="challenge",
+        definition="alpha sense v2",
+        confidence=4.0,
+    )
+    verdict = redefine_stale_entry(
+        entry, mongo_db,
+        MockAdapter(
+            default_response=_redefine_json("alpha sense v2", 8.5),
+            responses={
+                "[Grounding speaker: precision_critic]": payload,
+                "[Grounding speaker: synthesis_explorer]": payload,
+            },
+        ),
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(mode="external", overnight=True),
+        retriever=_HitRetriever(),
+    )
+    assert verdict is None
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.is_stale is True
+    assert len(stored.definitions) == 1
+    assert stored.definitions[0].text == "alpha sense v1"
+    log = mongo_db.decision_log.find_one({"term": "alpha"})
+    assert log is not None
+    assert log["outcome"] == "undecided"
+    assert log["final_confidence"] == 4.0
+    audit = mongo_db.semantic_grounding.find_one(
+        {"decision_log_id": log["decision_log_id"]}
+    )
+    assert audit["relation"] == "challenge"
+    assert audit["adopted"] is False
+
+
+def test_redefine_overnight_unrescued_low_score_is_audited_not_written(mongo_db) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry
+
+    _seed(mongo_db, "MPL-001", "alpha", definitions=["alpha sense v1"])
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    payload = _grounding_json(
+        relation="irrelevant",
+        definition="an outside sense that must not be stored",
+        confidence=9.0,
+    )
+    verdict = redefine_stale_entry(
+        entry, mongo_db,
+        MockAdapter(
+            default_response=_redefine_json("shaky corpus wording", 4.0),
+            responses={
+                "[Grounding speaker: precision_critic]": payload,
+                "[Grounding speaker: synthesis_explorer]": payload,
+            },
+        ),
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(
+            mode="hybrid", overnight=True, external_lookup_threshold=8.0,
+        ),
+        retriever=_HitRetriever(),
+    )
+    assert verdict is None
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert len(stored.definitions) == 1
+    assert stored.definitions[0].text == "alpha sense v1"
+    audit = mongo_db.semantic_grounding.find_one({"term": "alpha"})
+    assert audit is not None
+    assert audit["adopted"] is False
+    assert audit["relation"] == "irrelevant"
+    assert mongo_db.decision_log.count_documents({"term": "alpha"}) == 1
+
+
+def test_redefine_overnight_same_frame_uses_the_grounded_text(mongo_db) -> None:
+    """A same-frame model answer is not a no-op once grounding revises it."""
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry, update_references
+
+    same = "alpha is the foundational sense"
+    _seed(mongo_db, "MPL-001", "alpha", definitions=[same])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["MPL-001 reference."])
+    update_references(mongo_db, "MPL-002")
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    payload = _grounding_json(
+        relation="enrich", definition=_REVISED, confidence=8.5,
+    )
+    verdict = redefine_stale_entry(
+        entry, mongo_db,
+        MockAdapter(
+            default_response=_redefine_json(f"  {same}  ", 7.0),
+            responses={
+                "[Grounding speaker: precision_critic]": payload,
+                "[Grounding speaker: synthesis_explorer]": payload,
+            },
+        ),
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(
+            mode="hybrid", overnight=True, external_lookup_threshold=8.0,
+        ),
+        retriever=_HitRetriever(),
+    )
+    assert verdict is not None
+    assert verdict.noop is False
+    assert verdict.new_definition == _REVISED
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert [item.text for item in stored.definitions] == [same, _REVISED]
+    beta = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert beta.is_stale is True
+
+
+def test_redefine_overnight_keeps_a_same_frame_noop(mongo_db) -> None:
+    from mahalath.adapters import MockAdapter
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.staleness import redefine_stale_entry, update_references
+
+    same = "alpha is the foundational sense"
+    _seed(mongo_db, "MPL-001", "alpha", definitions=[same])
+    _seed(mongo_db, "MPL-002", "beta", definitions=["MPL-001 reference."])
+    update_references(mongo_db, "MPL-002")
+    _flag_audit_inconsistent(mongo_db, "MPL-001")
+    entry = OntologyEntryRepository(mongo_db).get("MPL-001")
+    payload = _grounding_json(
+        relation="corroborate", definition=same, confidence=8.0,
+    )
+    verdict = redefine_stale_entry(
+        entry, mongo_db,
+        MockAdapter(
+            default_response=_redefine_json(same, 7.0),
+            responses={
+                "[Grounding speaker: precision_critic]": payload,
+                "[Grounding speaker: synthesis_explorer]": payload,
+            },
+        ),
+        min_confidence=6.0,
+        grounding=SemanticGroundingConfig(mode="external", overnight=True),
+        retriever=_HitRetriever(),
+    )
+    assert verdict is not None
+    assert verdict.noop is True
+    stored = OntologyEntryRepository(mongo_db).get("MPL-001")
+    assert stored.is_stale is False
+    assert len(stored.definitions) == 1
+    beta = OntologyEntryRepository(mongo_db).get("MPL-002")
+    assert beta.is_stale is False
+    audit = mongo_db.semantic_grounding.find_one(
+        {"decision_log_id": verdict.decision_log_id}
+    )
+    assert audit is not None
+    assert audit["adopted"] is True
+
+
 def test_redefine_only_picks_audit_flagged_items(mongo_db, mongo_config) -> None:
     """Stale entries without an audit verdict are NOT redefined yet."""
     import json

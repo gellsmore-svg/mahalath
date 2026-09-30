@@ -19,6 +19,8 @@ input/file.md  →  ingest + SHA-256 dedupe + archive
               →  heading-aware chunk (any document size)
               →  LLM-driven candidate term extraction
               →  multi-iteration debate (PrecisionCritic + SynthesisExplorer)
+              →  optional external grounding (ADR-038), still on that debate:
+                 corpus_only by default; hybrid or external when configured
               →  if accepted: ontology entry (frame-tagged definition; debate path
                  records a per-definition consensus score) + hierarchy review
                  pass (3-pass consensus)
@@ -34,7 +36,19 @@ Every model interaction is recorded with a `decision_log_id` and queryable forev
 
 Definitions are tagged with a **context frame** (a governed taxonomy of `DefinitionContext` rows, authored per corpus). One entry can legitimately carry, say, a legal definition *and* an engineering one — they are co-equal; nothing supersedes anything. The web UI, chat, glossary export, and retrieval layer all group and label definitions by frame.
 
-**`consensus_score` is pathway-specific.** The multi-agent debate path records a per-definition consensus score (min confidence across PrecisionCritic / SynthesisExplorer). The REM redefine path deliberately leaves it `null` — it is a single-model verdict, not multi-agent agreement — and operator-authored definitions likewise have no consensus score. Older definitions may lack the field entirely (schema evolution); treat absence/`null` as "not a debate consensus," not as zero.
+**`consensus_score` is pathway-specific.** The multi-agent debate path records a per-definition consensus score (min confidence across PrecisionCritic / SynthesisExplorer). The REM redefine path leaves it `null` while the stored wording is that single-model verdict. When overnight grounding is on and the two grounding agents adopt a revision, the stored score is their minimum. Operator-authored definitions have no consensus score. Older definitions may lack the field entirely (schema evolution); treat absence/`null` as "not a debate consensus," not as zero.
+
+### External semantic grounding
+
+The source document stays the primary evidence for what a term means in that document. `semantic_grounding.mode` chooses whether anything outside the corpus may be consulted after the ordinary debate:
+
+- `corpus_only` (default) supplies no retrieved evidence. Use it for a corpus that should be read as self-defining.
+- `hybrid` runs the corpus debate first and looks outward only when that debate's minimum confidence is strictly below `external_lookup_threshold` (default 8.0).
+- `external` always looks up after the corpus debate.
+
+Passages can clarify, discriminate, corroborate, challenge, or enrich. A revised definition is stored only when both agents call it faithful to the source, neither dismisses or challenges the passages, the wording is not copied from an external passage, and they are at least as confident as the corpus debate. A challenge keeps the corpus wording and cannot raise confidence. A failed lookup leaves the corpus decision. The passages are an audit of that decision (`semantic_grounding`, plus a snapshot on the definition), not a web glossary. Retrieval, the glossary, and the entry page show the relation and how many sources were considered. Configure sources under `semantic_grounding.providers`: a local JSON file (`static`), MediaWiki search snippets (`wikipedia`), or an operator endpoint (`http`).
+
+Stale definitions rewritten by the overnight REM job, and by `redefine-stale`, stay inside the corpus unless `semantic_grounding.overnight` is turned on. It defaults to off. With it on, that rewrite is still taken from the ontology first, and external lookup then follows the same mode and threshold. A result that does not clear the redefine confidence floor is not stored. REM re-debate of items still below the debate threshold follows `mode` on its own; the overnight flag does not gate it.
 
 ### Self-healing
 

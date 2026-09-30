@@ -378,10 +378,24 @@ def _register_routes(app: FastAPI) -> None:
                     f'<div class="definition-detailed">'
                     f'{escape(d.detailed_text)}</div>'
                 )
+            from mahalath.grounding import grounding_summary_line
+
+            # Relation and counts only. Snippets and URLs stay on the
+            # audit row so a retrieved page cannot inject markup here.
+            summary = grounding_summary_line(
+                invoked=bool(getattr(d, "grounding_invoked", False)),
+                relation=getattr(d, "grounding_relation", None),
+                corpus_confidence=getattr(d, "corpus_confidence", None),
+                evidence_count=len(getattr(d, "external_evidence", None) or []),
+            )
+            grounding_html = (
+                f'<p class="grounding">{escape(summary)}</p>' if summary else ""
+            )
             return f"""
 <div class="definition">{escape(d.text)}</div>
 {detailed_html}
 <p class="attribution">— from <code>{escape(d.model_used or "?")}</code> at {_iso(d.created_at)}</p>
+{grounding_html}
 {intent_html}"""
 
         sections = []

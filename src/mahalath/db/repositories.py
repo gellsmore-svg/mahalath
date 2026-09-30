@@ -26,6 +26,7 @@ from mahalath.db.models import (
     OntologyEntry,
     OntologyReview,
     OntologyTreeEdge,
+    SemanticGroundingRecord,
     UndecidedItem,
 )
 
@@ -301,3 +302,22 @@ class MappingRepository:
             Mapping.model_validate(doc)
             for doc in self._col.find().sort("created_at", 1)
         ]
+
+
+class SemanticGroundingRepository:
+    """Audit rows for external lookups. Not an ontology collection."""
+
+    def __init__(self, db: Database) -> None:
+        self._col: Collection = db.semantic_grounding
+
+    def upsert(self, record: SemanticGroundingRecord) -> SemanticGroundingRecord:
+        self._col.replace_one(
+            {"decision_log_id": record.decision_log_id},
+            record.model_dump(),
+            upsert=True,
+        )
+        return record
+
+    def for_decision(self, decision_log_id: str) -> SemanticGroundingRecord | None:
+        doc = self._col.find_one({"decision_log_id": decision_log_id})
+        return SemanticGroundingRecord.model_validate(doc) if doc else None

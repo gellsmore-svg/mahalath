@@ -74,6 +74,20 @@ class DebateResult:
     final_context_name: str | None = None
     messages: list[DebateMessage] = field(default_factory=list)
     exchanges: list[AgentExchange] = field(default_factory=list)
+    # Semantic grounding (ADR-038). None means this result never passed
+    # through apply_grounding — operator accepts and older callers.
+    # corpus_only still stamps the mode so the write records what was
+    # in force. External hits are audit, not a second definition.
+    grounding_mode: str | None = None
+    grounding_invoked: bool = False
+    corpus_confidence: float | None = None
+    grounding_relation: str | None = None
+    grounding_adopted: bool = False
+    grounding_note: str | None = None
+    grounding_hits: list[dict[str, Any]] = field(default_factory=list)
+    grounding_query: str = ""
+    grounding_providers: list[str] = field(default_factory=list)
+    grounding_id: str | None = None
 
 
 def run_debate(

@@ -688,7 +688,9 @@ def main(argv: list[str] | None = None) -> int:
     redefine_parser = subcommands.add_parser(
         "redefine-stale",
         help="For audit-flagged stale entries, ask the model for a fresh "
-        "definition consistent with current upstream; append + clear stale.",
+        "definition consistent with current upstream; append + clear stale. "
+        "External grounding on this pass runs only when "
+        "semantic_grounding.overnight is true (default false).",
     )
     redefine_parser.add_argument(
         "--max-items", type=int, default=10,
@@ -1356,6 +1358,7 @@ def _run_pipeline_on_document(
     from mahalath.db.repositories import DocumentRepository
     from mahalath.debate import DebateError, run_debate
     from mahalath.extraction import ExtractionError
+    from mahalath.grounding import apply_grounding
     from mahalath.hierarchy import (
         HierarchyReviewError,
         run_hierarchy_review_consensus,
@@ -1441,6 +1444,14 @@ def _run_pipeline_on_document(
                 style_overlay=style_overlay,
                 available_contexts=available_contexts or None,
             )
+            debate_result = apply_grounding(
+                debate_result,
+                config.semantic_grounding,
+                config.runtime,
+                adapter=adapter,
+                style_overlay=style_overlay,
+                language=doc_language,
+            )
         except (DebateError, AdapterError) as exc:
             debated.append({
                 "term": candidate.term,
@@ -1460,6 +1471,12 @@ def _run_pipeline_on_document(
             "iterations_used": debate_result.iterations_used,
             "mpl_label": persist_result.mpl_label,
             "decision_log_id": debate_result.decision_log_id,
+            "grounding_mode": debate_result.grounding_mode,
+            "grounding_invoked": debate_result.grounding_invoked,
+            "corpus_confidence": debate_result.corpus_confidence,
+            "grounding_relation": debate_result.grounding_relation,
+            "grounding_adopted": debate_result.grounding_adopted,
+            "external_evidence_count": len(debate_result.grounding_hits),
         }
         if (
             persist_result.outcome == "accepted"
@@ -2759,6 +2776,7 @@ def _redebate_entry(
             result = redebate_entry(
                 db, label, chosen.text, adapter, config.runtime,
                 style_overlay=style_overlay, apply=apply_flag,
+                grounding=config.semantic_grounding,
             )
         except (DebateError, AdapterError) as exc:
             print(f"mahalath: debate failed: {exc}", file=sys.stderr)

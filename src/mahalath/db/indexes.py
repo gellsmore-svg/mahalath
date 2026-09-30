@@ -166,4 +166,14 @@ def ensure_indexes(db: Database) -> dict[str, list[str]]:
         db.operator_decisions.create_index([("decided_at", DESCENDING)]),
     ]
 
+    # ADR-038: one external-lookup audit per debate decision. Not a
+    # second ontology — the definition, when stored, stays on the entry.
+    created["semantic_grounding"] = [
+        db.semantic_grounding.create_index("grounding_id", unique=True),
+        db.semantic_grounding.create_index("decision_log_id", unique=True),
+        db.semantic_grounding.create_index("term"),
+        db.semantic_grounding.create_index("mpl_label"),
+        db.semantic_grounding.create_index([("created_at", DESCENDING)]),
+    ]
+
     return created

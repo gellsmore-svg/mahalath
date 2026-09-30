@@ -167,7 +167,13 @@ def _default_rem_job(config: AppConfig) -> None:
     )
 
     # Redefine pass: items the audit declared inconsistent get a fresh
-    # definition written against current upstream state.
+    # definition written against current upstream state. External
+    # grounding here follows semantic_grounding.overnight (default off).
+    log.info(
+        "scheduler: stale-redefine grounding overnight=%s mode=%s",
+        config.semantic_grounding.overnight,
+        config.semantic_grounding.mode,
+    )
     redef = redefine_pending_stale(config, db, adapter, max_items=10)
     log.info(
         "scheduler: REM stale-redefine — at_start=%d redefined=%d "

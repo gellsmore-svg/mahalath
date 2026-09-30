@@ -234,6 +234,7 @@ def _render_entry_for_chat(
     so the chat context block and retrieval bundle text look identical
     to a downstream model (S-C).
     """
+    from mahalath.grounding import meaning_grounding_kwargs
     from mahalath.retrieval import Meaning, render_entry_lines
 
     meanings = []
@@ -255,6 +256,7 @@ def _render_entry_for_chat(
             intentionality=d.intentionality,
             intent_confidence=d.intent_confidence,
             detailed_description=d.detailed_text,
+            **meaning_grounding_kwargs(d),
         ))
 
     return render_entry_lines(

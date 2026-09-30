@@ -175,6 +175,17 @@ class DefinitionVersion(_MahalathModel):
     intent_tags: list[str] = Field(default_factory=list)
     intentionality: Literal["low", "medium", "high"] | None = None
     intent_confidence: float | None = None
+    # Semantic grounding (ADR-038). `grounding_mode` is null on rows
+    # written before the feature and on operator accepts. A debate that
+    # ran under corpus_only records that mode with `grounding_invoked`
+    # false — the absence of external evidence is part of the record.
+    # `external_evidence` is a compact snapshot of passages considered,
+    # not a definition and not a second sense.
+    grounding_mode: str | None = None
+    grounding_invoked: bool = False
+    corpus_confidence: float | None = None
+    grounding_relation: str | None = None
+    external_evidence: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -361,6 +372,38 @@ class UndecidedItem(_MahalathModel):
     context: str | None = None
     last_confidence: float | None = None
     escalation_level: int = 0
+    # Set when the debate that queued this term had already consulted
+    # external evidence (ADR-038). Null on older rows.
+    grounding_mode: str | None = None
+    grounding_invoked: bool = False
+    grounding_relation: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    schema_version: int = SCHEMA_VERSION
+
+
+class SemanticGroundingRecord(_MahalathModel):
+    """One external-lookup attempt tied to a debate decision.
+
+    Not an ontology entry and not a definition. The passage list is
+    what the debate was shown; `relation` is what the two agents made
+    of it; `adopted` is whether that replaced the corpus wording. The
+    source-faithful definition, when one is stored, lives on the
+    ontology entry as usual.
+    """
+
+    grounding_id: str = Field(default_factory=lambda: str(uuid4()))
+    decision_log_id: str
+    term: str
+    source_document_id: str
+    mpl_label: str | None = None
+    mode: str
+    query: str = ""
+    providers: list[str] = Field(default_factory=list)
+    corpus_confidence: float | None = None
+    relation: str | None = None
+    adopted: bool = False
+    note: str | None = None
+    hits: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
     schema_version: int = SCHEMA_VERSION
 

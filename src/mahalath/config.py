@@ -17,7 +17,9 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class MongoConfig(BaseModel):
@@ -192,6 +194,82 @@ class RemConfig(BaseModel):
     cron: str = "0 2 * * *"
 
 
+class SemanticGroundingConfig(BaseModel):
+    """When, if ever, a corpus debate may consult external passages.
+
+    `corpus_only` is the default and performs no external lookup.
+    `hybrid` looks up only when the corpus debate's minimum confidence
+    is below `external_lookup_threshold`. `external` always looks up
+    after the corpus debate. See ADR-038.
+    """
+
+    mode: Literal["corpus_only", "hybrid", "external"] = "corpus_only"
+    # 0–10, same scale as runtime.confidence_threshold. Hybrid retrieves
+    # only when the corpus score is strictly below this value.
+    external_lookup_threshold: float = 8.0
+    # Stale-entry redefine (the overnight REM job and `redefine-stale`)
+    # consults external passages only when this is true. Off by default,
+    # so `mode: hybrid` does not by itself send that pass out to
+    # retrieve. REM re-debate of undecided items, ingest, and manual
+    # redebate follow `mode` whether or not this flag is set.
+    overnight: bool = False
+    # Ordered sources. Empty means a non-corpus mode records that
+    # nothing was configured and keeps the corpus decision.
+    # static — local JSON file; wikipedia — MediaWiki search;
+    # http — operator endpoint returning {"hits": [...]}.
+    providers: list[Literal["static", "wikipedia", "http"]] = Field(
+        default_factory=list
+    )
+    max_hits: int = 5
+    # None ranks by embedding cosine when that works, and never drops a
+    # hit. A number drops scored hits below it; unscored hits are kept.
+    min_relevance: float | None = None
+    static_path: str | None = None
+    http_url: str | None = None
+    wikipedia_language: str = "en"
+    timeout_seconds: float = 15.0
+    # None → Mahalath's default User-Agent. Wikipedia requires one.
+    user_agent: str | None = None
+
+    @field_validator("overnight", mode="before")
+    @classmethod
+    def _overnight_flag(cls, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError("overnight must be true or false")
+
+    @field_validator("external_lookup_threshold")
+    @classmethod
+    def _threshold_on_scale(cls, value: float) -> float:
+        if not 0.0 <= value <= 10.0:
+            raise ValueError(
+                "external_lookup_threshold must be between 0 and 10"
+            )
+        return value
+
+    @field_validator("min_relevance")
+    @classmethod
+    def _relevance_is_cosine(cls, value: float | None) -> float | None:
+        if value is not None and not -1.0 <= value <= 1.0:
+            raise ValueError("min_relevance must be between -1 and 1")
+        return value
+
+    @field_validator("max_hits")
+    @classmethod
+    def _hit_cap(cls, value: int) -> int:
+        if not 1 <= value <= 20:
+            raise ValueError("max_hits must be between 1 and 20")
+        return value
+
+
 class GaleedConfig(BaseModel):
     """Family trace spine (Galeed) emission. Off by default; when enabled,
     pipeline lifecycle events (document ingested, debate completed, proposal
@@ -209,6 +287,9 @@ class AppConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     rem: RemConfig = Field(default_factory=RemConfig)
+    semantic_grounding: SemanticGroundingConfig = Field(
+        default_factory=SemanticGroundingConfig
+    )
     galeed: GaleedConfig = Field(default_factory=GaleedConfig)
 
 
@@ -226,6 +307,9 @@ _ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MAHALATH_MODEL_ADAPTER": ("runtime", "model_adapter"),
     "MAHALATH_EMBEDDING_MODEL": ("runtime", "embedding_model"),
     # Galeed spine emission, togglable by Noa without a config file.
+    "MAHALATH_GROUNDING_MODE": ("semantic_grounding", "mode"),
+    "MAHALATH_GROUNDING_THRESHOLD": ("semantic_grounding", "external_lookup_threshold"),
+    "MAHALATH_GROUNDING_OVERNIGHT": ("semantic_grounding", "overnight"),
     "MAHALATH_GALEED_ENABLED": ("galeed", "enabled"),
     "MAHALATH_GALEED_MONGO_URI": ("galeed", "uri"),
     "MAHALATH_GALEED_MONGO_DB": ("galeed", "database"),

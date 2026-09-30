@@ -41,9 +41,14 @@ from mahalath.db.repositories import (
     DecisionLogRepository,
     OntologyEntryRepository,
     OntologyTreeRepository,
+    SemanticGroundingRepository,
     UndecidedQueueRepository,
 )
 from mahalath.debate import DebateResult
+from mahalath.grounding import (
+    consensus_score_for,
+    definition_grounding_fields,
+)
 
 log = logging.getLogger("mahalath.ontology")
 
@@ -95,6 +100,7 @@ def persist_debate_result(
             _decision_log_entry(result, ACCEPTED, [mpl_label])
         )
         _persist_exchanges(result, exchange_repo)
+        _persist_grounding_record(result, db, mpl_label=mpl_label)
         _maybe_enrich_detailed(
             result, db, runtime, mpl_label, definition_index=0, adapter=adapter,
         )
@@ -113,6 +119,7 @@ def persist_debate_result(
     if result.outcome == UNDECIDED:
         decision_repo.insert(_decision_log_entry(result, UNDECIDED, []))
         _persist_exchanges(result, exchange_repo)
+        _persist_grounding_record(result, db, mpl_label=None)
         item = _route_to_undecided(result, db, runtime)
         return PersistResult(
             outcome=UNDECIDED,
@@ -177,10 +184,13 @@ def _write_accepted(
                 model_used=_model_used_in(result),
                 decision_log_id=result.decision_log_id,
                 context_id=context_id,
-                # Multi-agent agreement for THIS definition (min(pc, se)
-                # at accept time); the entry-level confidence can drift
-                # later, this snapshot doesn't.
-                consensus_score=result.final_confidence,
+                # Multi-agent agreement for the pathway that wrote THIS
+                # wording. A grounding revision carries that round's
+                # minimum; wording the corpus debate wrote keeps the
+                # corpus minimum even if a later challenge moved the
+                # entry-level confidence.
+                consensus_score=consensus_score_for(result),
+                **definition_grounding_fields(result),
             )
         ],
         source_document_ids=[result.source_document_id],
@@ -288,9 +298,30 @@ def _route_to_undecided(
         reason=reason,
         context=result.context or None,
         last_confidence=result.final_confidence,
+        grounding_mode=result.grounding_mode,
+        grounding_invoked=result.grounding_invoked,
+        grounding_relation=result.grounding_relation,
     )
     UndecidedQueueRepository(db).insert(item)
     return item
+
+
+def _persist_grounding_record(
+    result: DebateResult, db: Database, *, mpl_label: str | None
+) -> None:
+    """Write the external-lookup audit in the same persist as the decision.
+
+    Skipped when grounding was not invoked, so corpus-only debates do
+    not grow an empty evidence collection. Invoked lookups with no hits
+    are still recorded: the attempt is part of the decision.
+    """
+    if not result.grounding_invoked:
+        return
+    from mahalath.grounding import build_grounding_record
+
+    SemanticGroundingRepository(db).upsert(
+        build_grounding_record(result, mpl_label=mpl_label)
+    )
 
 
 def persist_decision_audit(
@@ -329,6 +360,10 @@ class RedebateResult:
     new_confidence: float | None
     new_model_used: str | None
     applied: bool = False
+    grounding_mode: str | None = None
+    grounding_invoked: bool = False
+    grounding_relation: str | None = None
+    corpus_confidence: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -341,6 +376,10 @@ class RedebateResult:
             "new_confidence": self.new_confidence,
             "new_model_used": self.new_model_used,
             "applied": self.applied,
+            "grounding_mode": self.grounding_mode,
+            "grounding_invoked": self.grounding_invoked,
+            "grounding_relation": self.grounding_relation,
+            "corpus_confidence": self.corpus_confidence,
         }
 
 
@@ -354,6 +393,8 @@ def redebate_entry(
     style_overlay: str | None = None,
     apply: bool = False,
     triggering_document_id: str | None = None,
+    grounding=None,
+    retriever=None,
 ) -> RedebateResult:
     """Re-run the debate loop on an existing entry to refresh its definition.
 
@@ -425,6 +466,22 @@ def redebate_entry(
         style_overlay=style_overlay,
         available_contexts=available_contexts or None,
     )
+    from mahalath.config import SemanticGroundingConfig
+    from mahalath.grounding import apply_grounding
+
+    # None means the caller did not opt into a configured mode. That is
+    # corpus_only, matching every redebate written before ADR-038.
+    if grounding is None:
+        grounding = SemanticGroundingConfig()
+    result = apply_grounding(
+        result,
+        grounding,
+        runtime,
+        adapter=adapter,
+        retriever=retriever,
+        style_overlay=style_overlay,
+        language=entry.language,
+    )
 
     out = RedebateResult(
         mpl_label=mpl_label,
@@ -435,9 +492,22 @@ def redebate_entry(
         new_definition=result.final_definition,
         new_confidence=result.final_confidence,
         new_model_used=_model_used_in(result),
+        grounding_mode=result.grounding_mode,
+        grounding_invoked=result.grounding_invoked,
+        grounding_relation=result.grounding_relation,
+        corpus_confidence=result.corpus_confidence,
     )
 
-    if not apply or result.outcome != ACCEPTED:
+    if not apply:
+        return out
+    if result.outcome != ACCEPTED:
+        # A challenge that pulls the refresh back under the threshold is
+        # still a model conversation. Record it; do not change the entry.
+        if result.grounding_invoked:
+            persist_decision_audit(
+                result, db, outcome=result.outcome, resulting_labels=[mpl_label],
+            )
+            _persist_grounding_record(result, db, mpl_label=mpl_label)
         return out
 
     # Persist the debate audit (decision_log + exchanges), then append
@@ -445,6 +515,7 @@ def redebate_entry(
     # the refresh stays in-frame; entry-level confidence advances to the
     # new cross-family agreement.
     persist_decision_audit(result, db, outcome=ACCEPTED, resulting_labels=[mpl_label])
+    _persist_grounding_record(result, db, mpl_label=mpl_label)
     now = datetime.now(timezone.utc)
     db.ontology_entries.update_one(
         {"_id": mpl_label},
@@ -456,8 +527,9 @@ def redebate_entry(
                     "model_used": _model_used_in(result),
                     "decision_log_id": result.decision_log_id,
                     "context_id": current.context_id,
-                    "consensus_score": result.final_confidence,
+                    "consensus_score": consensus_score_for(result),
                     "created_at": now,
+                    **definition_grounding_fields(result),
                 }
             },
             "$set": {"confidence": result.final_confidence, "updated_at": now},

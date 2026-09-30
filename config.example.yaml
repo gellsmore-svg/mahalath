@@ -144,3 +144,36 @@ rem:
   # DQ-009. Default fixed schedule.
   enabled: true
   cron: "0 2 * * *"     # 02:00 local time
+
+# External semantic grounding (ADR-038). The source document stays
+# primary. External passages may clarify, corroborate, challenge, or
+# enrich a corpus-derived sense. They never silently replace it, and
+# they are not a second ontology.
+#
+# mode:
+#   corpus_only  default. No external lookup. Right for a corpus that
+#                is treated as self-defining.
+#   hybrid       look up only when the corpus debate's minimum
+#                confidence is strictly below external_lookup_threshold.
+#   external     always look up after the corpus debate.
+#
+# providers, in order: static (a local JSON file), wikipedia (MediaWiki
+# search snippets only — result pages are not fetched), http (an
+# operator endpoint returning {"hits": [...]}). An empty list records
+# that nothing was configured and keeps the corpus decision.
+semantic_grounding:
+  mode: corpus_only
+  external_lookup_threshold: 8.0
+  # Stale-entry redefine (overnight REM job and `redefine-stale`)
+  # consults external passages only when this is true. Off: `mode`
+  # hybrid or external does not send that pass out to retrieve.
+  # REM re-debate of undecided items follows `mode` either way.
+  overnight: false
+  providers: []
+  max_hits: 5
+  # min_relevance: 0.2          # cosine; omit to rank without dropping
+  # static_path: grounding/passages.json
+  # http_url: https://example.invalid/ground
+  wikipedia_language: en
+  timeout_seconds: 15
+  # user_agent: null            # null -> Mahalath's default User-Agent

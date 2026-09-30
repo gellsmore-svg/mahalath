@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Semantic grounding (ADR-038).** After the ordinary corpus debate,
+  Mahalath can consult external passages without making them a second
+  ontology. `semantic_grounding.mode` is `corpus_only` (the default; no
+  lookup), `hybrid` (lookup only when the corpus minimum confidence is
+  strictly below `external_lookup_threshold`), or `external` (always
+  look up after the corpus debate). A revision is stored only when both
+  agents call it faithful to the source, neither challenges or dismisses
+  the passages, the wording is not copied from an external passage, and
+  the pair is at least as confident as the corpus debate. A challenge
+  keeps the corpus wording and cannot raise confidence. Retrieval or
+  model failure leaves the corpus decision. The attempt is audited on
+  the same `decision_log_id` and in `semantic_grounding`. Sources are a
+  local JSON file, MediaWiki search snippets, or an operator HTTP
+  endpoint. `MAHALATH_GROUNDING_MODE` and `MAHALATH_GROUNDING_THRESHOLD`
+  override the YAML.
+- **Overnight grounding toggle.** `semantic_grounding.overnight`
+  (default off; `MAHALATH_GROUNDING_OVERNIGHT`) lets the stale-entry
+  redefine pass — the scheduler's REM job and `redefine-stale` — run
+  semantic grounding after its source-first rewrite. Off, that pass
+  does not retrieve, even when `mode` is `hybrid` or `external`. On,
+  lookup follows `mode` and `external_lookup_threshold`. A rewrite
+  still below the redefine confidence floor is not appended; an
+  invoked lookup is still audited. REM re-debate of undecided items,
+  ingest, and manual redebate keep following `mode` on their own.
+
 ## [1.6.0] — 2026-08-11
 
 First operation of ADR-036 against the live corpus, and what it exposed.

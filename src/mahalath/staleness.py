@@ -49,7 +49,7 @@ from uuid import uuid4
 from pymongo.database import Database
 
 from mahalath.adapters.base import Adapter, AdapterError
-from mahalath.config import AppConfig
+from mahalath.config import AppConfig, RuntimeConfig, SemanticGroundingConfig
 from mahalath.db.models import (
     AgentExchange,
     DebateMessage,
@@ -997,38 +997,51 @@ def _record_redefine_audit(
     verdict: RedefineVerdict,
     outcome: str,
     triggering_document_id: str | None = None,
+    decision_log_id: str | None = None,
+    extra_messages: list[DebateMessage] | None = None,
+    extra_exchanges: list[AgentExchange] | None = None,
+    final_confidence: float | None = None,
 ) -> str:
     """Write decision_log + agent_exchanges for a rem_redefine call; return id.
 
     Records the document that TRIGGERED the redefine when the caller knows it;
     ``source_document_ids[0]`` is only a fallback and is wrong for an entry
     evidenced by several documents (ADR-033 prerequisite).
+
+    ``extra_messages`` and ``extra_exchanges`` are the grounding round, when
+    overnight grounding ran. They share this decision_log_id. ``final_confidence``
+    is the post-grounding score; omitted, the log keeps the redefine verdict.
     """
-    decision_log_id = str(uuid4())
+    decision_log_id = decision_log_id or str(uuid4())
     source_document_id = triggering_document_id or (
         entry.source_document_ids[0] if entry.source_document_ids else ""
     )
+    messages = [
+        DebateMessage(
+            iteration=1,
+            role="rem_redefine",
+            content=verdict.rationale,
+            confidence=verdict.confidence,
+            model=model,
+        ),
+        *(extra_messages or []),
+    ]
     DecisionLogRepository(db).insert(
         DecisionLogEntry(
             decision_log_id=decision_log_id,
             term=entry.canonical_term,
             source_document_id=source_document_id,
-            messages=[
-                DebateMessage(
-                    iteration=1,
-                    role="rem_redefine",
-                    content=verdict.rationale,
-                    confidence=verdict.confidence,
-                    model=model,
-                )
-            ],
-            final_confidence=verdict.confidence,
-            iterations_used=1,
+            messages=messages,
+            final_confidence=(
+                verdict.confidence if final_confidence is None else final_confidence
+            ),
+            iterations_used=max(message.iteration for message in messages),
             outcome=outcome,
             resulting_mpl_labels=[entry.mpl_label],
         )
     )
-    AgentExchangeRepository(db).insert(
+    exchange_repo = AgentExchangeRepository(db)
+    exchange_repo.insert(
         AgentExchange(
             decision_log_id=decision_log_id,
             iteration=1,
@@ -1039,7 +1052,76 @@ def _record_redefine_audit(
             confidence=verdict.confidence,
         )
     )
+    for exchange in extra_exchanges or []:
+        exchange_repo.insert(exchange)
     return decision_log_id
+
+
+def _ground_redefine_verdict(
+    entry: OntologyEntry,
+    db: Database,
+    adapter: Adapter,
+    verdict: RedefineVerdict,
+    *,
+    grounding: SemanticGroundingConfig,
+    runtime: RuntimeConfig,
+    style_overlay: str | None,
+    retriever: Any,
+    triggering_document_id: str | None,
+) -> Any:
+    """Continue a source-first redefine with semantic grounding.
+
+    The redefine verdict is the corpus decision. Lookup, when the mode
+    requires it, happens after that verdict. A low redefine score is
+    still eligible: hybrid's point is that a weak corpus result is when
+    external evidence is consulted.
+    """
+    from mahalath.debate import DebateResult
+    from mahalath.detailed import source_snippet_for_entry
+    from mahalath.grounding import apply_grounding
+
+    source_document_id = triggering_document_id or (
+        entry.source_document_ids[0] if entry.source_document_ids else ""
+    )
+    parts: list[str] = []
+    snippet = source_snippet_for_entry(
+        db, entry, source_document_id=triggering_document_id,
+    )
+    if snippet:
+        parts.append(snippet)
+    if entry.definitions:
+        parts.append(
+            "Current ontology definition: " + entry.definitions[-1].text
+        )
+    result = DebateResult(
+        decision_log_id=str(uuid4()),
+        term=entry.canonical_term,
+        source_document_id=source_document_id,
+        outcome="accepted",
+        final_definition=verdict.new_definition,
+        final_confidence=verdict.confidence,
+        iterations_used=1,
+        context="\n\n".join(parts),
+        final_context_name=verdict.context_name,
+    )
+    return apply_grounding(
+        result,
+        grounding,
+        runtime,
+        adapter=adapter,
+        retriever=retriever,
+        style_overlay=style_overlay,
+        language=entry.language,
+    )
+
+
+def _persist_redefine_grounding(grounded: Any, db: Database, mpl_label: str) -> None:
+    """Audit an invoked lookup on the redefine's decision_log_id."""
+    if grounded is None or not grounded.grounding_invoked:
+        return
+    from mahalath.ontology import _persist_grounding_record
+
+    _persist_grounding_record(grounded, db, mpl_label=mpl_label)
 
 
 def stale_entries_with_inconsistent_audit(
@@ -1249,6 +1331,9 @@ def redefine_stale_entry(
     min_confidence: float = 6.0,
     available_contexts: list[dict] | None = None,
     triggering_document_id: str | None = None,
+    grounding: SemanticGroundingConfig | None = None,
+    runtime: RuntimeConfig | None = None,
+    retriever: Any = None,
 ) -> RedefineVerdict | None:
     """Ask `adapter` for a refreshed definition; append + clear stale on success.
 
@@ -1259,22 +1344,73 @@ def redefine_stale_entry(
     ADR-033's same-document scoping filter correctly over wrong data.
 
     Returns the verdict on success (including no-op same-frame redefines),
-    None when confidence is below `min_confidence` (nothing is written).
+    None when confidence is below `min_confidence` (nothing is written,
+    unless overnight grounding was invoked — that attempt is audited and
+    the entry is left stale).
 
     Same-frame no-ops (model re-derives text already present under the
     resolved frame) clear stale and refresh `updated_at` without
     appending a duplicate definition and without cascading to
-    dependents (review H1/H2). Every successful redefine records a
-    decision_log row and links it from the new definition when one is
+    dependents (review H1/H2). The comparison uses the post-grounding
+    text when overnight grounding ran. Every successful redefine records
+    a decision_log row and links it from the new definition when one is
     written (review H3).
+
+    ``grounding.overnight`` defaults to false. Off, this pass does not
+    retrieve, whatever ``grounding.mode`` is. On, the redefine verdict
+    stays the source-first step and `apply_grounding` runs after it.
+    The write floor stays `min_confidence`, not the debate threshold.
     """
     prompt = build_redefine_prompt(
         entry, db, style_overlay, available_contexts=available_contexts,
     )
     response = adapter.generate(prompt, want_json=True)
     verdict = parse_redefine_verdict(response.text)
+    model_name = response.model or "unknown"
 
-    if verdict.confidence < min_confidence:
+    grounded = None
+    if grounding is not None and grounding.overnight:
+        grounded = _ground_redefine_verdict(
+            entry,
+            db,
+            adapter,
+            verdict,
+            grounding=grounding,
+            runtime=runtime or RuntimeConfig(),
+            style_overlay=style_overlay,
+            retriever=retriever,
+            triggering_document_id=triggering_document_id,
+        )
+
+    text = verdict.new_definition
+    score = verdict.confidence
+    if grounded is not None:
+        if (grounded.final_definition or "").strip():
+            text = grounded.final_definition
+        if grounded.final_confidence is not None:
+            score = grounded.final_confidence
+
+    # The redefine write floor is min_confidence, not
+    # runtime.confidence_threshold. apply_grounding may mark its debate
+    # outcome undecided against the debate threshold; that does not by
+    # itself reject a rewrite that still clears this floor.
+    if score < min_confidence or not (text or "").strip():
+        if grounded is not None and grounded.grounding_invoked:
+            _record_redefine_audit(
+                db,
+                entry=entry,
+                prompt=prompt,
+                response_text=response.text,
+                model=model_name,
+                verdict=verdict,
+                outcome="undecided",
+                triggering_document_id=triggering_document_id,
+                decision_log_id=grounded.decision_log_id,
+                extra_messages=grounded.messages,
+                extra_exchanges=grounded.exchanges,
+                final_confidence=score,
+            )
+            _persist_redefine_grounding(grounded, db, entry.mpl_label)
         return None
 
     # Resolve context name → context_id (None if unmatched).
@@ -1283,9 +1419,7 @@ def redefine_stale_entry(
     # contexts' descriptions.
     chosen_name = verdict.context_name
     if not chosen_name and available_contexts:
-        chosen_name = _infer_context_name(
-            verdict.new_definition, available_contexts
-        )
+        chosen_name = _infer_context_name(text, available_contexts)
 
     context_id: str | None = None
     if chosen_name:
@@ -1298,23 +1432,27 @@ def redefine_stale_entry(
         if ctx is not None:
             context_id = ctx.context_id
 
-    model_name = response.model or "unknown"
     now = _utcnow()
+    audit_kwargs = dict(
+        entry=entry,
+        prompt=prompt,
+        response_text=response.text,
+        model=model_name,
+        verdict=verdict,
+        outcome="accepted",
+        triggering_document_id=triggering_document_id,
+        final_confidence=score,
+    )
+    if grounded is not None:
+        audit_kwargs["decision_log_id"] = grounded.decision_log_id
+        audit_kwargs["extra_messages"] = grounded.messages
+        audit_kwargs["extra_exchanges"] = grounded.exchanges
 
-    # H1/H2: if the model re-derived text already present in this frame,
+    # H1/H2: if the post-grounding text is already present in this frame,
     # do not append a duplicate and do not cascade staleness.
-    if _frame_already_has_definition(
-        entry, verdict.new_definition, context_id
-    ):
-        decision_log_id = _record_redefine_audit(
-            db,
-            entry=entry,
-            prompt=prompt,
-            response_text=response.text,
-            model=model_name,
-            verdict=verdict,
-            outcome="accepted",
-        )
+    if _frame_already_has_definition(entry, text, context_id):
+        decision_log_id = _record_redefine_audit(db, **audit_kwargs)
+        _persist_redefine_grounding(grounded, db, entry.mpl_label)
         db.ontology_entries.update_one(
             {"_id": entry.mpl_label},
             {"$set": {"updated_at": now}},
@@ -1326,30 +1464,33 @@ def redefine_stale_entry(
             entry.mpl_label,
         )
         return RedefineVerdict(
-            new_definition=verdict.new_definition,
-            confidence=verdict.confidence,
+            new_definition=text,
+            confidence=score,
             rationale=verdict.rationale,
             context_name=verdict.context_name,
             noop=True,
             decision_log_id=decision_log_id,
         )
 
-    decision_log_id = _record_redefine_audit(
-        db,
-        entry=entry,
-        prompt=prompt,
-        response_text=response.text,
-        model=model_name,
-        verdict=verdict,
-        outcome="accepted",
-        triggering_document_id=triggering_document_id,
-    )
+    from mahalath.grounding import consensus_score_for, definition_grounding_fields
+
+    grounding_fields: dict[str, Any] = {}
+    consensus_score = None
+    if grounded is not None:
+        grounding_fields = definition_grounding_fields(grounded)
+        # Null unless the two grounding agents adopted the wording.
+        # The single-model redefine is not a debate consensus.
+        if grounded.grounding_adopted:
+            consensus_score = consensus_score_for(grounded)
+
+    decision_log_id = _record_redefine_audit(db, **audit_kwargs)
+    _persist_redefine_grounding(grounded, db, entry.mpl_label)
     db.ontology_entries.update_one(
         {"_id": entry.mpl_label},
         {
             "$push": {
                 "definitions": {
-                    "text": verdict.new_definition,
+                    "text": text,
                     "language": "en",
                     # Pathway marker + the model that actually wrote it,
                     # so the audit trail names the author (operator
@@ -1359,9 +1500,11 @@ def redefine_stale_entry(
                     "decision_log_id": decision_log_id,
                     "context_id": context_id,
                     # Single-model verdict, not multi-agent agreement —
-                    # consensus_score is reserved for debate output.
-                    "consensus_score": None,
+                    # consensus_score is reserved for debate output,
+                    # including a revision the grounding pair adopted.
+                    "consensus_score": consensus_score,
                     "created_at": now,
+                    **grounding_fields,
                 }
             },
             "$set": {"updated_at": now},
@@ -1396,8 +1539,8 @@ def redefine_stale_entry(
             "detailed: expansion skipped for %s — %s", entry.mpl_label, exc
         )
     return RedefineVerdict(
-        new_definition=verdict.new_definition,
-        confidence=verdict.confidence,
+        new_definition=text,
+        confidence=score,
         rationale=verdict.rationale,
         context_name=verdict.context_name,
         noop=False,
@@ -1413,6 +1556,7 @@ def redefine_pending_stale(
     max_items: int = 10,
     min_confidence: float = 6.0,
     intent_backfill: bool = True,
+    retriever: Any = None,
 ) -> RedefineResult:
     """Walk audit-flagged stale entries and rewrite definitions in place.
 
@@ -1421,6 +1565,10 @@ def redefine_pending_stale(
     intent annotation, so without this the self-healing pass reopens
     the intent-coverage gap every time it runs. `intent_backfill=False`
     opts out. No-ops when no intent taxonomy is defined.
+
+    External grounding on this pass follows `config.semantic_grounding`
+    and runs only when `overnight` is true. `retriever` is a test seam;
+    production builds one from the configured providers.
     """
     stale = stale_entries_with_inconsistent_audit(db, limit=max_items)
     style_overlay = load_style_overlay(config)
@@ -1446,6 +1594,9 @@ def redefine_pending_stale(
                 # being processed, so there is no triggering document to
                 # claim; the audit falls back to the entry's own source.
                 triggering_document_id=None,
+                grounding=config.semantic_grounding,
+                runtime=config.runtime,
+                retriever=retriever,
             )
         except (AdapterError, RedefineError) as exc:
             result.items_errored += 1

@@ -27,11 +27,17 @@ from pymongo.database import Database
 from mahalath.adapters.base import Adapter
 from mahalath.config import AppConfig
 from mahalath.db.repositories import (
+    DefinitionContextRepository,
     DocumentRepository,
     UndecidedQueueRepository,
 )
 from mahalath.debate import DebateError, run_debate
-from mahalath.ontology import persist_debate_result, persist_decision_audit
+from mahalath.grounding import apply_grounding
+from mahalath.ontology import (
+    _persist_grounding_record,
+    persist_debate_result,
+    persist_decision_audit,
+)
 from mahalath.style import resolve_style_overlay
 
 
@@ -67,9 +73,6 @@ def rem_review(
     pending = queue.list_pending(limit=max(max_items * 4, 32))
     result = RemReviewResult(items_pending_at_start=len(pending))
 
-
-    from mahalath.db.repositories import DefinitionContextRepository
-
     available_contexts = [
         {"name": c.name, "description": c.description}
         for c in DefinitionContextRepository(db).all()
@@ -98,6 +101,14 @@ def rem_review(
                 runtime=config.runtime,
                 style_overlay=overlay,
                 available_contexts=available_contexts or None,
+            )
+            debate_result = apply_grounding(
+                debate_result,
+                config.semantic_grounding,
+                config.runtime,
+                adapter=adapter,
+                style_overlay=overlay,
+                language=getattr(document, "language", None) or "en",
             )
         except DebateError as exc:
             result.items_errored += 1
@@ -131,11 +142,15 @@ def rem_review(
         persist_decision_audit(
             debate_result, db, outcome=debate_result.outcome,
         )
+        _persist_grounding_record(debate_result, db, mpl_label=None)
         db.undecided_queue.update_one(
             {"decision_log_id": item.decision_log_id},
             {"$set": {
                 "last_confidence": debate_result.final_confidence,
                 "escalation_level": item.escalation_level + 1,
+                "grounding_mode": debate_result.grounding_mode,
+                "grounding_invoked": debate_result.grounding_invoked,
+                "grounding_relation": debate_result.grounding_relation,
             }},
         )
         result.items_still_undecided += 1

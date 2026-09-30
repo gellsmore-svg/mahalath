@@ -54,6 +54,7 @@ from mahalath.db.repositories import (
     DefinitionContextRepository,
     OntologyEntryRepository,
 )
+from mahalath.grounding import grounding_summary_line, meaning_grounding_kwargs
 from mahalath.paths import resolved_path
 
 _MIN_TERM_LEN = 4
@@ -148,6 +149,14 @@ class Meaning:
     intent_confidence: float | None = None
     # Longer exposition of the same sense as `description` (optional).
     detailed_description: str | None = None
+    # Semantic grounding (ADR-038). Present on the meaning so a caller
+    # can see that external passages were consulted. The passages
+    # themselves are not a meaning and are not copied here.
+    grounding_mode: str | None = None
+    grounding_invoked: bool = False
+    grounding_relation: str | None = None
+    corpus_confidence: float | None = None
+    external_evidence_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -361,6 +370,7 @@ def get_codified(db: Database, ref: str) -> CodifiedRef | None:
             intentionality=d.intentionality,
             intent_confidence=d.intent_confidence,
             detailed_description=d.detailed_text,
+            **meaning_grounding_kwargs(d),
         ))
     if keep_ctx_id is not None and not meanings:
         return None  # frame exists globally but this entry has no def in it
@@ -586,6 +596,14 @@ def render_entry_lines(
                     for para in m.detailed_description.strip().splitlines():
                         if para.strip():
                             lines.append(f"        {para.strip()}")
+                grounding_line = grounding_summary_line(
+                    invoked=m.grounding_invoked,
+                    relation=m.grounding_relation,
+                    corpus_confidence=m.corpus_confidence,
+                    evidence_count=m.external_evidence_count,
+                )
+                if grounding_line:
+                    lines.append(f"        ({grounding_line})")
                 # Intent annotation (deployment metadata, ADR-024) —
                 # rendered as an aside so it never reads as semantics.
                 extras = []
