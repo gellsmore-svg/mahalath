@@ -47,6 +47,7 @@ from mahalath.db.repositories import (
 from mahalath.debate import DebateResult
 from mahalath.grounding import (
     consensus_score_for,
+    definition_author_model,
     definition_grounding_fields,
 )
 
@@ -270,7 +271,14 @@ def _decision_log_entry(
         source_document_id=result.source_document_id,
         messages=result.messages,
         final_confidence=result.final_confidence,
-        iterations_used=result.iterations_used,
+        # Grounding is a distinct round after the corpus debate. Keep
+        # DebateResult.iterations_used unchanged for iteration-cap logic,
+        # while making the persisted transcript count agree with its rows.
+        iterations_used=max(
+            [result.iterations_used]
+            + [message.iteration for message in result.messages]
+            + [exchange.iteration for exchange in result.exchanges]
+        ),
         outcome=outcome,
         resulting_mpl_labels=resulting_labels,
     )
@@ -566,6 +574,13 @@ def redebate_entry(
 
 def _model_used_in(result: DebateResult) -> str | None:
     """Pick a representative model name from the recorded exchanges."""
+    author = definition_author_model(result)
+    if author is not None:
+        return author
+    if result.grounding_invoked:
+        # Grounding ran but did not author the retained corpus wording.
+        # Do not misattribute that wording to the last grounding exchange.
+        return None
     for exchange in reversed(result.exchanges):
         if exchange.model:
             return exchange.model

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Semantic grounding now requires a final critic ratification of the
+  explorer's exact wording, rejects short and wrapped verbatim external
+  copies, preserves failed grounding calls in the audit trail, attributes
+  stored prose to its actual author model, and includes the grounding round
+  in persisted transcript iteration counts.
+
 ### Added
 - **Semantic grounding (ADR-038).** After the ordinary corpus debate,
   Mahalath can consult external passages without making them a second

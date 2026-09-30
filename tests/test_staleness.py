@@ -821,6 +821,7 @@ def test_redefine_overnight_hybrid_adopts_below_the_redefine_floor(mongo_db) -> 
         responses={
             "[Grounding speaker: precision_critic]": payload,
             "[Grounding speaker: synthesis_explorer]": payload,
+            "[Grounding ratifier: precision_critic]": payload,
         },
     )
     retriever = _HitRetriever()
@@ -850,7 +851,7 @@ def test_redefine_overnight_hybrid_adopts_below_the_redefine_floor(mongo_db) -> 
     assert written.corpus_confidence == 5.5
     assert written.consensus_score == 7.5
     assert written.external_evidence[0]["url"] == "https://example.invalid/alpha"
-    assert written.model_used == "rem_redefine (mock-model)"
+    assert written.model_used == "semantic_grounding (gemma4:e2b)"
 
     log = mongo_db.decision_log.find_one(
         {"decision_log_id": verdict.decision_log_id}
@@ -860,6 +861,7 @@ def test_redefine_overnight_hybrid_adopts_below_the_redefine_floor(mongo_db) -> 
         "rem_redefine",
         "grounding_precision_critic",
         "grounding_synthesis_explorer",
+        "grounding_precision_critic_ratification",
     ]
     assert log["final_confidence"] == 7.5
     exchange_roles = [
@@ -898,6 +900,7 @@ def test_redefine_overnight_challenge_below_floor_does_not_append(mongo_db) -> N
             responses={
                 "[Grounding speaker: precision_critic]": payload,
                 "[Grounding speaker: synthesis_explorer]": payload,
+                "[Grounding ratifier: precision_critic]": payload,
             },
         ),
         min_confidence=6.0,
@@ -939,6 +942,7 @@ def test_redefine_overnight_unrescued_low_score_is_audited_not_written(mongo_db)
             responses={
                 "[Grounding speaker: precision_critic]": payload,
                 "[Grounding speaker: synthesis_explorer]": payload,
+                "[Grounding ratifier: precision_critic]": payload,
             },
         ),
         min_confidence=6.0,
@@ -980,6 +984,7 @@ def test_redefine_overnight_same_frame_uses_the_grounded_text(mongo_db) -> None:
             responses={
                 "[Grounding speaker: precision_critic]": payload,
                 "[Grounding speaker: synthesis_explorer]": payload,
+                "[Grounding ratifier: precision_critic]": payload,
             },
         ),
         min_confidence=6.0,
@@ -1018,6 +1023,7 @@ def test_redefine_overnight_keeps_a_same_frame_noop(mongo_db) -> None:
             responses={
                 "[Grounding speaker: precision_critic]": payload,
                 "[Grounding speaker: synthesis_explorer]": payload,
+                "[Grounding ratifier: precision_critic]": payload,
             },
         ),
         min_confidence=6.0,

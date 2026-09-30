@@ -15,11 +15,13 @@ from pydantic import ValidationError
 
 from mahalath.adapters.mock import MockAdapter
 from mahalath.config import (
+    AgentRoleConfig,
+    AgentRolesConfig,
     RuntimeConfig,
     SemanticGroundingConfig,
     load_config,
 )
-from mahalath.db.models import DefinitionVersion, OntologyEntry
+from mahalath.db.models import AgentExchange, DefinitionVersion, OntologyEntry
 from mahalath.db.repositories import (
     OntologyEntryRepository,
     SemanticGroundingRepository,
@@ -164,6 +166,83 @@ def test_verbatim_external_wording_is_not_stored() -> None:
     assert "verbatim" in (decision.note or "")
 
 
+@pytest.mark.parametrize(
+    ("passage", "candidate"),
+    [
+        ("Compact outside definition.", "Compact outside definition."),
+        (
+            "External evidence gives this complete source passage in full.",
+            "Definition: External evidence gives this complete source passage in full.",
+        ),
+        (
+            "External evidence gives this complete source passage in full.",
+            "External evidence gives this complete source passage in full. Added gloss.",
+        ),
+        (
+            "one two three four five six seven eight nine ten",
+            "A source-aware definition uses three four five six seven eight nine ten here.",
+        ),
+    ],
+)
+def test_short_wrapped_and_partial_external_copies_are_not_stored(
+    passage: str, candidate: str,
+) -> None:
+    hits = [EvidenceHit(provider="test", title="Source", snippet=passage)]
+    decision = decide_grounding(
+        corpus_definition=CORPUS,
+        corpus_confidence=6.0,
+        critic=_opinion(definition=candidate),
+        explorer=_opinion(definition=candidate),
+        hits=hits,
+    )
+    assert decision.adopted is False
+    assert decision.definition == CORPUS
+    assert "verbatim" in (decision.note or "")
+
+
+def test_shared_term_of_art_does_not_count_as_a_verbatim_copy() -> None:
+    candidate = (
+        "Here a stable relational knot names one persistent object in the argument."
+    )
+    hits = [EvidenceHit(
+        provider="test",
+        title="Stable relational knot",
+        snippet=(
+            "A stable relational knot can also describe a different mathematical "
+            "construction in unrelated literature."
+        ),
+    )]
+    decision = decide_grounding(
+        corpus_definition=CORPUS,
+        corpus_confidence=6.0,
+        critic=_opinion(definition=candidate),
+        explorer=_opinion(definition=candidate),
+        hits=hits,
+    )
+    assert decision.adopted is True
+    assert decision.definition == candidate
+
+
+def test_explorer_revision_requires_exact_final_ratification() -> None:
+    explorer_definition = (
+        "In this document a vorton is a stable relational knot with extra force."
+    )
+    critic_definition = (
+        "In this document a vorton is merely a stable relational knot."
+    )
+    decision = decide_grounding(
+        corpus_definition=CORPUS,
+        corpus_confidence=6.0,
+        initial_critic=_opinion(definition=critic_definition),
+        explorer=_opinion(definition=explorer_definition),
+        critic=_opinion(definition=critic_definition),
+        hits=_hits(),
+    )
+    assert decision.adopted is False
+    assert decision.definition == CORPUS
+    assert "not ratified" in (decision.note or "")
+
+
 def test_no_corpus_definition_is_not_filled_from_outside() -> None:
     decision = decide_grounding(
         corpus_definition=None,
@@ -257,6 +336,7 @@ def test_grounding_round_adopts_a_source_faithful_revision() -> None:
     adapter = MockAdapter(responses={
         "[Grounding speaker: precision_critic]": payload,
         "[Grounding speaker: synthesis_explorer]": payload,
+        "[Grounding ratifier: precision_critic]": payload,
     })
     result = apply_grounding(
         _result(confidence=6.5),
@@ -270,9 +350,89 @@ def test_grounding_round_adopts_a_source_faithful_revision() -> None:
     assert result.final_definition == REFINED
     assert result.final_confidence == 9.0
     assert result.corpus_confidence == 6.5
-    assert len(result.exchanges) == 2
+    assert len(result.exchanges) == 3
+    assert [exchange.role for exchange in result.exchanges] == [
+        "grounding_precision_critic",
+        "grounding_synthesis_explorer",
+        "grounding_precision_critic_ratification",
+    ]
     assert "https://example.invalid/vorton" in result.exchanges[0].prompt
     assert "[Speaker: precision_critic]" not in result.exchanges[0].prompt
+    assert "FINAL CANDIDATE TO RATIFY" in result.exchanges[-1].prompt
+    assert REFINED in result.exchanges[-1].prompt
+
+
+def test_failed_grounding_call_is_audited_and_keeps_corpus_author(mongo_db) -> None:
+    result = _result(confidence=8.5, outcome="accepted")
+    result.exchanges.extend([
+        AgentExchange(
+            decision_log_id=result.decision_log_id,
+            iteration=1,
+            role="precision_critic",
+            model="corpus-critic-model",
+            prompt="corpus critic prompt",
+            response="corpus critic response",
+            confidence=9.0,
+        ),
+        AgentExchange(
+            decision_log_id=result.decision_log_id,
+            iteration=1,
+            role="synthesis_explorer",
+            model="corpus-explorer-model",
+            prompt="corpus explorer prompt",
+            response="corpus explorer response",
+            confidence=8.5,
+        ),
+    ])
+    grounding_payload = json.dumps({
+        "relation": "enrich",
+        "source_faithful": True,
+        "definition": REFINED,
+        "explanation": "candidate",
+        "confidence": 9.0,
+        "evidence_notes": "",
+    })
+    runtime = _runtime().model_copy(update={
+        "agents": AgentRolesConfig(
+            precision_critic=AgentRoleConfig(model="grounding-critic-model"),
+            synthesis_explorer=AgentRoleConfig(model="grounding-explorer-model"),
+        ),
+    })
+    adapter = MockAdapter(responses={
+        "[Grounding speaker: precision_critic]": grounding_payload,
+        "[Grounding speaker: synthesis_explorer]": "not JSON",
+    })
+    grounded = apply_grounding(
+        result,
+        SemanticGroundingConfig(mode="external"),
+        runtime,
+        adapter=adapter,
+        retriever=type(
+            "R", (),
+            {"retrieve": lambda self, query, limit: _hits(), "errors": []},
+        )(),
+    )
+    assert grounded.final_definition == CORPUS
+    assert grounded.grounding_adopted is False
+    assert grounded.grounding_note.startswith("grounding model call failed:")
+    failed = grounded.exchanges[-1]
+    assert failed.role == "grounding_synthesis_explorer"
+    assert failed.model == "grounding-explorer-model"
+    assert failed.response == "not JSON"
+    assert failed.confidence is None
+
+    persisted = persist_debate_result(grounded, mongo_db, runtime)
+    stored = persisted.ontology_entry.definitions[0]
+    assert stored.model_used == "corpus-explorer-model"
+    log = mongo_db.decision_log.find_one(
+        {"decision_log_id": grounded.decision_log_id}
+    )
+    assert log["iterations_used"] == 2
+    raw = mongo_db.agent_exchanges.find_one({
+        "decision_log_id": grounded.decision_log_id,
+        "role": "grounding_synthesis_explorer",
+    })
+    assert raw["response"] == "not JSON"
 
 
 def test_static_wikipedia_and_http_retrievers(tmp_path: Path) -> None:
@@ -408,6 +568,7 @@ def test_persist_and_redebate_keep_evidence_on_the_definition(mongo_db, tmp_path
     adapter = MockAdapter(responses={
         "[Grounding speaker: precision_critic]": payload,
         "[Grounding speaker: synthesis_explorer]": payload,
+        "[Grounding ratifier: precision_critic]": payload,
         "[Speaker: precision_critic]": corpus_payload_critic,
         "[Speaker: synthesis_explorer]": corpus_payload_explorer,
     })
@@ -437,6 +598,11 @@ def test_persist_and_redebate_keep_evidence_on_the_definition(mongo_db, tmp_path
     assert audit is not None
     assert audit.adopted is True
     assert audit.mpl_label == seeded.mpl_label
+    log = mongo_db.decision_log.find_one({
+        "decision_log_id": latest.decision_log_id,
+    })
+    assert log["iterations_used"] == 2
+    assert max(message["iteration"] for message in log["messages"]) == 2
 
     codified = get_codified(mongo_db, seeded.mpl_label)
     assert codified.meanings[-1].grounding_relation == "enrich"

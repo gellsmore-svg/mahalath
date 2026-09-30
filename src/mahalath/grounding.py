@@ -21,17 +21,19 @@ items follows `mode` either way.
 
 External passages may clarify, discriminate, corroborate, challenge, or
 enrich the corpus-derived sense. They are labelled non-authoritative.
-A revised definition is stored only when both agents call it faithful
-to the source, neither dismisses or challenges the evidence, the new
-wording is not copied from an external passage, and the agents are at
+A revised definition is stored only when SynthesisExplorer proposes it
+and PrecisionCritic then ratifies that exact wording as source-faithful.
+Neither agent may dismiss or challenge the evidence, the new wording
+may not copy an external passage, and all grounding scores must be at
 least as confident as the corpus debate. A challenge keeps the corpus
 wording and cannot raise confidence. A retrieval or model failure
 leaves the corpus decision as it stood.
 
-The grounding turn is one more exchange from each of the existing
-debaters (PrecisionCritic, SynthesisExplorer), written onto the same
-`decision_log_id`. Hits are ranked with `mahalath.embeddings.cosine`
-when the embedding adapter can score them.
+The grounding round has an initial PrecisionCritic exchange, a
+SynthesisExplorer proposal, and a final PrecisionCritic ratification,
+all written onto the same `decision_log_id` and iteration number. Hits
+are ranked with `mahalath.embeddings.cosine` when the embedding adapter
+can score them.
 """
 
 from __future__ import annotations
@@ -117,14 +119,18 @@ _RELATION_ALIASES = {
 # corpus tag would answer the grounding turn.
 SPEAKER_TAG_GROUNDING_CRITIC = "[Grounding speaker: precision_critic]"
 SPEAKER_TAG_GROUNDING_EXPLORER = "[Grounding speaker: synthesis_explorer]"
+SPEAKER_TAG_GROUNDING_RATIFIER = "[Grounding ratifier: precision_critic]"
 
 GROUNDING_ROLE_CRITIC = "grounding_precision_critic"
 GROUNDING_ROLE_EXPLORER = "grounding_synthesis_explorer"
+GROUNDING_ROLE_RATIFIER = "grounding_precision_critic_ratification"
 
 SNIPPET_CAP = 1000
+COPY_MIN_WORDS = 8
 _LANG_RE = re.compile(r"^[a-z]{2,12}(?:-[a-z0-9]{2,16})?$")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+_COPY_WORD_RE = re.compile(r"\b\w+(?:[-']\w+)*\b", re.UNICODE)
 
 UrlOpener = Callable[..., str]
 
@@ -205,22 +211,30 @@ def decide_grounding(
     critic: GroundingOpinion,
     explorer: GroundingOpinion,
     hits: list[EvidenceHit],
+    initial_critic: GroundingOpinion | None = None,
 ) -> GroundingDecision:
     """Apply the source-primary rules to one grounding round.
 
     Pure: no retrieval, no model, no database. The corpus definition is
-    replaced only by a revision both agents call faithful to the source,
-    that neither agent challenges or dismisses, that is not copied from
-    an external passage, and that the pair trusts at least as much as
-    the corpus debate did.
+    replaced only by an explorer revision whose exact wording the final
+    critic ratifies as faithful to the source, that no grounding agent
+    challenges or dismisses, that is not copied from an external passage,
+    and that every grounding agent trusts at least as much as the corpus
+    debate did.
     """
     corpus_text = (corpus_definition or "").strip()
-    relation = _more_cautious(critic.relation, explorer.relation)
-    grounding_min = min(critic.confidence, explorer.confidence)
+    opinions = [critic, explorer]
+    if initial_critic is not None:
+        opinions.append(initial_critic)
+    relation = min(
+        (opinion.relation for opinion in opinions),
+        key=lambda item: _RELATION_RANK[item],
+    )
+    grounding_min = min(opinion.confidence for opinion in opinions)
 
-    if critic.relation == "challenge" or explorer.relation == "challenge":
+    if any(opinion.relation == "challenge" for opinion in opinions):
         confidence = _min_present(
-            corpus_confidence, critic.confidence, explorer.confidence
+            corpus_confidence, *(opinion.confidence for opinion in opinions)
         )
         return GroundingDecision(
             definition=corpus_text or None,
@@ -244,11 +258,9 @@ def decide_grounding(
         )
 
     proposed = explorer.definition.strip()
-    both_faithful = critic.source_faithful and explorer.source_faithful
-    dismissed = (
-        critic.relation == "irrelevant" or explorer.relation == "irrelevant"
-    )
-    if not both_faithful or dismissed or not proposed:
+    all_faithful = all(opinion.source_faithful for opinion in opinions)
+    dismissed = any(opinion.relation == "irrelevant" for opinion in opinions)
+    if not all_faithful or dismissed or not proposed:
         return GroundingDecision(
             definition=corpus_text,
             confidence=corpus_confidence,
@@ -256,6 +268,19 @@ def decide_grounding(
             adopted=False,
             challenged=False,
             note="external evidence recorded; corpus definition unchanged",
+        )
+
+    # The final critic turn exists specifically to ratify the explorer's
+    # exact candidate. Confidence about some other wording is not approval
+    # of the definition that would be stored.
+    if _norm(critic.definition) != _norm(proposed):
+        return GroundingDecision(
+            definition=corpus_text,
+            confidence=corpus_confidence,
+            relation=relation,
+            adopted=False,
+            challenged=False,
+            note="revision not stored: final wording was not ratified",
         )
 
     if _copies_external(proposed, hits):
@@ -382,7 +407,7 @@ def apply_grounding(
         return result
 
     try:
-        critic, explorer = _run_grounding_round(
+        initial_critic, explorer, ratifier = _run_grounding_round(
             result,
             kept,
             adapter=adapter,
@@ -397,9 +422,10 @@ def apply_grounding(
     decision = decide_grounding(
         corpus_definition=result.final_definition,
         corpus_confidence=result.corpus_confidence,
-        critic=critic,
+        critic=ratifier,
         explorer=explorer,
         hits=kept,
+        initial_critic=initial_critic,
     )
     _apply_decision(result, decision, threshold=runtime.confidence_threshold)
     if provider_errors and result.grounding_note:
@@ -775,6 +801,19 @@ def consensus_score_for(result: DebateResult) -> float | None:
     return result.final_confidence
 
 
+def definition_author_model(result: DebateResult) -> str | None:
+    """Model that authored the definition currently selected on ``result``."""
+    role = (
+        GROUNDING_ROLE_EXPLORER
+        if result.grounding_adopted
+        else "synthesis_explorer"
+    )
+    for exchange in reversed(result.exchanges):
+        if exchange.role == role and exchange.confidence is not None:
+            return exchange.model
+    return None
+
+
 def build_grounding_record(
     result: DebateResult, *, mpl_label: str | None
 ) -> SemanticGroundingRecord:
@@ -822,10 +861,6 @@ def _apply_decision(
             )
 
 
-def _more_cautious(left: str, right: str) -> str:
-    return left if _RELATION_RANK[left] <= _RELATION_RANK[right] else right
-
-
 def _min_present(*values: float | None) -> float | None:
     present = [value for value in values if value is not None]
     if not present:
@@ -834,24 +869,53 @@ def _min_present(*values: float | None) -> float | None:
 
 
 def _copies_external(definition: str, hits: list[EvidenceHit]) -> bool:
-    """True when the proposed definition is the external passage itself."""
+    """True when meaningful verbatim external wording appears in a definition.
+
+    Exact copies are rejected at every length. Longer prose is rejected
+    when either text contains the other or when they share a contiguous
+    eight-word run. Eight words catches copied clauses while allowing short
+    domain phrases and terms of art to appear in both texts.
+    """
     norm = _norm(definition)
-    if len(norm) < 40:
+    words = _copy_words(definition)
+    if not norm:
         return False
     for hit in hits:
         for raw in (hit.snippet, hit.title):
             other = _norm(raw)
             if not other:
                 continue
-            if norm == other:
+            other_words = _copy_words(raw)
+            if norm == other or (words and words == other_words):
                 return True
-            if len(other) >= 40 and norm in other:
+            if min(len(norm), len(other)) >= 40 and (
+                norm in other or other in norm
+            ):
+                return True
+            if _shares_word_run(words, other_words, size=COPY_MIN_WORDS):
                 return True
     return False
 
 
 def _norm(text: str) -> str:
     return _WS_RE.sub(" ", text.casefold()).strip()
+
+
+def _copy_words(text: str) -> list[str]:
+    return [match.group(0).casefold() for match in _COPY_WORD_RE.finditer(text)]
+
+
+def _shares_word_run(left: list[str], right: list[str], *, size: int) -> bool:
+    if len(left) < size or len(right) < size:
+        return False
+    left_runs = {
+        tuple(left[index:index + size])
+        for index in range(len(left) - size + 1)
+    }
+    return any(
+        tuple(right[index:index + size]) in left_runs
+        for index in range(len(right) - size + 1)
+    )
 
 
 def _embedding_query(result: DebateResult) -> str:
@@ -868,7 +932,7 @@ def _run_grounding_round(
     adapter: Adapter,
     runtime: RuntimeConfig,
     style_overlay: str | None,
-) -> tuple[GroundingOpinion, GroundingOpinion]:
+) -> tuple[GroundingOpinion, GroundingOpinion, GroundingOpinion]:
     iteration = result.iterations_used + 1
     pc_model = runtime.agents.precision_critic.model or runtime.model
     se_model = runtime.agents.synthesis_explorer.model or runtime.model
@@ -883,6 +947,7 @@ def _run_grounding_round(
     )
     critic, critic_exchange = _call_grounding_agent(
         adapter,
+        result=result,
         role=GROUNDING_ROLE_CRITIC,
         iteration=iteration,
         model=pc_model,
@@ -912,6 +977,7 @@ def _run_grounding_round(
     )
     explorer, explorer_exchange = _call_grounding_agent(
         adapter,
+        result=result,
         role=GROUNDING_ROLE_EXPLORER,
         iteration=iteration,
         model=se_model,
@@ -926,7 +992,39 @@ def _run_grounding_round(
         confidence=explorer.confidence,
         model=se_model,
     ))
-    return critic, explorer
+
+    ratifier_prompt = _build_grounding_prompt(
+        result,
+        hits,
+        speaker_tag=SPEAKER_TAG_GROUNDING_RATIFIER,
+        role_blurb=_RATIFIER_BLURB,
+        style_overlay=style_overlay,
+        history_roles=(
+            "precision_critic",
+            "synthesis_explorer",
+            GROUNDING_ROLE_CRITIC,
+            GROUNDING_ROLE_EXPLORER,
+        ),
+        candidate_definition=explorer.definition,
+    )
+    ratifier, ratifier_exchange = _call_grounding_agent(
+        adapter,
+        result=result,
+        role=GROUNDING_ROLE_RATIFIER,
+        iteration=iteration,
+        model=pc_model,
+        prompt=ratifier_prompt,
+        decision_log_id=result.decision_log_id,
+    )
+    result.exchanges.append(ratifier_exchange)
+    result.messages.append(DebateMessage(
+        iteration=iteration,
+        role=GROUNDING_ROLE_RATIFIER,
+        content=_format_grounding_history(ratifier),
+        confidence=ratifier.confidence,
+        model=pc_model,
+    ))
+    return critic, explorer, ratifier
 
 
 _CRITIC_BLURB = (
@@ -941,6 +1039,14 @@ _EXPLORER_BLURB = (
     "definition where the source document supports the refinement. You "
     "have the last word on wording. You may not replace the document's "
     "sense with an external one."
+)
+
+_RATIFIER_BLURB = (
+    "You are the PrecisionCritic performing final ratification. Evaluate "
+    "the SynthesisExplorer's exact candidate wording against the primary "
+    "source and external passages. If it is faithful, repeat that candidate "
+    "exactly in definition and set source_faithful true. Do not rewrite it. "
+    "If it is not faithful, set source_faithful false and explain why."
 )
 
 _OUTPUT_CONTRACT = (
@@ -963,6 +1069,7 @@ def _build_grounding_prompt(
     role_blurb: str,
     style_overlay: str | None,
     history_roles: tuple[str, ...],
+    candidate_definition: str | None = None,
 ) -> str:
     from mahalath.style import render_style_block
 
@@ -1015,6 +1122,12 @@ def _build_grounding_prompt(
         ]
         if prior:
             parts.extend(["", "Debate so far:", _format_history(prior)])
+    if candidate_definition is not None:
+        parts.extend([
+            "",
+            "FINAL CANDIDATE TO RATIFY (repeat exactly if approved):",
+            candidate_definition.strip() or "(empty candidate)",
+        ])
     parts.extend(["", "EXTERNAL EVIDENCE (non-authoritative):"])
     for index, hit in enumerate(hits, start=1):
         parts.append(f"<<<EXTERNAL_EVIDENCE {index}>>>")
@@ -1039,6 +1152,7 @@ def _build_grounding_prompt(
 def _call_grounding_agent(
     adapter: Adapter,
     *,
+    result: DebateResult,
     role: str,
     iteration: int,
     model: str,
@@ -1048,10 +1162,31 @@ def _call_grounding_agent(
     try:
         response = adapter.generate(prompt, want_json=True, model=model)
     except AdapterError as exc:
+        _record_failed_grounding_call(
+            result,
+            role=role,
+            iteration=iteration,
+            model=model,
+            prompt=prompt,
+            response=f"[adapter error] {exc}",
+            error=str(exc),
+        )
         raise DebateError(
             f"Adapter failed during {role}: {exc}"
         ) from exc
-    opinion = parse_grounding_opinion(response.text)
+    try:
+        opinion = parse_grounding_opinion(response.text)
+    except DebateError as exc:
+        _record_failed_grounding_call(
+            result,
+            role=role,
+            iteration=iteration,
+            model=response.model or model,
+            prompt=prompt,
+            response=response.text,
+            error=str(exc),
+        )
+        raise
     exchange = AgentExchange(
         decision_log_id=decision_log_id,
         iteration=iteration,
@@ -1062,6 +1197,34 @@ def _call_grounding_agent(
         confidence=opinion.confidence,
     )
     return opinion, exchange
+
+
+def _record_failed_grounding_call(
+    result: DebateResult,
+    *,
+    role: str,
+    iteration: int,
+    model: str,
+    prompt: str,
+    response: str,
+    error: str,
+) -> None:
+    result.exchanges.append(AgentExchange(
+        decision_log_id=result.decision_log_id,
+        iteration=iteration,
+        role=role,
+        model=model,
+        prompt=prompt,
+        response=response,
+        confidence=None,
+    ))
+    result.messages.append(DebateMessage(
+        iteration=iteration,
+        role=role,
+        content=f"grounding call failed: {error}",
+        confidence=None,
+        model=model,
+    ))
 
 
 def parse_grounding_opinion(response_text: str) -> GroundingOpinion:

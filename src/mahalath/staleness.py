@@ -1472,7 +1472,11 @@ def redefine_stale_entry(
             decision_log_id=decision_log_id,
         )
 
-    from mahalath.grounding import consensus_score_for, definition_grounding_fields
+    from mahalath.grounding import (
+        consensus_score_for,
+        definition_author_model,
+        definition_grounding_fields,
+    )
 
     grounding_fields: dict[str, Any] = {}
     consensus_score = None
@@ -1482,6 +1486,12 @@ def redefine_stale_entry(
         # The single-model redefine is not a debate consensus.
         if grounded.grounding_adopted:
             consensus_score = consensus_score_for(grounded)
+
+    stored_model = f"rem_redefine ({model_name})"
+    if grounded is not None and grounded.grounding_adopted:
+        grounding_author = definition_author_model(grounded)
+        if grounding_author:
+            stored_model = f"semantic_grounding ({grounding_author})"
 
     decision_log_id = _record_redefine_audit(db, **audit_kwargs)
     _persist_redefine_grounding(grounded, db, entry.mpl_label)
@@ -1496,7 +1506,7 @@ def redefine_stale_entry(
                     # so the audit trail names the author (operator
                     # request 2026-06-12; the in-session frontier
                     # redefines exposed the gap).
-                    "model_used": f"rem_redefine ({model_name})",
+                    "model_used": stored_model,
                     "decision_log_id": decision_log_id,
                     "context_id": context_id,
                     # Single-model verdict, not multi-agent agreement —
